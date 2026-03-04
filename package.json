@@ -15,7 +15,7 @@
     }
   },
   "scripts": {
-    "build": "tsc && cp -r src/browser/scripts dist/src/browser/scripts",
+    "build": "tsc && node -e \"const fs=require('fs');fs.cpSync('src/browser/scripts','dist/src/browser/scripts',{recursive:true})\"",
     "dev": "tsc --watch",
     "start": "node dist/bin/amipilot.js",
     "clean": "rm -rf dist"
