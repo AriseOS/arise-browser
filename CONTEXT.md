@@ -25,13 +25,17 @@ AI browser automation engine extracted from ami-desktop's browser control layer.
 - **Full select**: Implemented (Pinchtab has empty stub)
 - **Viewport-validated coordinates**: (Pinchtab hardcodes 0,0)
 
+## Element Data
+
+PageSnapshot caches the `elements` map (ref → {name, role}) from unified_analyzer.js on every `capture()` call. Access via `PageSnapshot.getLastElements()` or `BrowserSession.getLastElements()`. This allows consumers (e.g., ami-desktop) to look up element metadata for clicked/typed refs without regex-parsing snapshot text.
+
 ## Key Files
 
 | File | Purpose |
 |------|---------|
-| `src/browser/browser-session.ts` | Core session management, 3 connection modes |
+| `src/browser/browser-session.ts` | Core session management, 3 connection modes, `getLastElements()` |
 | `src/browser/action-executor.ts` | 15 action types including hover/focus |
-| `src/browser/page-snapshot.ts` | YAML accessibility tree via unified_analyzer.js |
+| `src/browser/page-snapshot.ts` | YAML accessibility tree via unified_analyzer.js, elements cache |
 | `src/browser/behavior-recorder.ts` | CDP recording with dataload detection |
 | `src/browser/scripts/unified_analyzer.js` | Page-injected 3-layer ref system (47KB) |
 | `src/browser/scripts/behavior_tracker.js` | Page-injected behavior tracker (14KB) |
@@ -39,7 +43,7 @@ AI browser automation engine extracted from ami-desktop's browser control layer.
 | `src/server/routes/` | One file per endpoint |
 | `src/logger.ts` | Injectable logger interface + pino default |
 | `src/lock.ts` | In-memory tab lock for multi-agent coordination |
-| `src/types/index.ts` | All public type definitions |
+| `src/types/index.ts` | All public type definitions (SessionRef, ActionResult, TabInfo, etc.) |
 
 ## API Endpoints
 
