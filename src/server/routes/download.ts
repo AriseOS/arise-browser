@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readFile, unlink } from "node:fs/promises";
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { BrowserSession } from "../../browser/browser-session.js";
 
@@ -18,7 +18,7 @@ export function registerDownloadRoute(app: FastifyInstance) {
 
     try {
       const download = await page.waitForEvent("download", {
-        timeout: parseInt(timeout) || 30000,
+        timeout: parseInt(timeout, 10) || 30000,
       });
 
       const filePath = await download.path();
@@ -28,13 +28,19 @@ export function registerDownloadRoute(app: FastifyInstance) {
         return reply.code(500).send({ error: "Download failed — no file path" });
       }
 
-      const buffer = readFileSync(filePath);
+      // Async read + cleanup temp file
+      const buffer = await readFile(filePath);
+      unlink(filePath).catch(() => {}); // best effort cleanup
+
+      // Sanitize filename for Content-Disposition header
+      const safeFilename = suggestedFilename.replace(/["\\]/g, "_");
+
       return reply
-        .header("Content-Disposition", `attachment; filename="${suggestedFilename}"`)
+        .header("Content-Disposition", `attachment; filename="${safeFilename}"`)
         .type("application/octet-stream")
         .send(buffer);
     } catch (e) {
-      return reply.code(500).send({ error: String(e) });
+      return reply.code(500).send({ error: "Download failed" });
     }
   });
 }

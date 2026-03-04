@@ -66,6 +66,9 @@ export class BrowserSession implements SessionRef {
   snapshot: PageSnapshot | null = null;
   executor: ActionExecutor | null = null;
 
+  // Connection mutex
+  private _connectPromise: Promise<void> | null = null;
+
   // Config
   private _sessionId: string;
   private _config: AmiPilotConfig;
@@ -104,11 +107,13 @@ export class BrowserSession implements SessionRef {
   // ===== Factory / Singleton =====
 
   static create(config: AmiPilotConfig, sessionId = "default"): BrowserSession {
-    let instance = BrowserSession._instances.get(sessionId);
-    if (!instance) {
-      instance = new BrowserSession(sessionId, config);
-      BrowserSession._instances.set(sessionId, instance);
+    const existing = BrowserSession._instances.get(sessionId);
+    if (existing) {
+      logger.warn({ sessionId }, "Session already exists — returning existing instance (new config ignored)");
+      return existing;
     }
+    const instance = new BrowserSession(sessionId, config);
+    BrowserSession._instances.set(sessionId, instance);
     return instance;
   }
 
@@ -125,6 +130,17 @@ export class BrowserSession implements SessionRef {
       if (this._browser?.isConnected()) return;
     }
 
+    // Mutex: deduplicate concurrent connection attempts
+    if (this._connectPromise) return this._connectPromise;
+    this._connectPromise = this._doConnect();
+    try {
+      await this._connectPromise;
+    } finally {
+      this._connectPromise = null;
+    }
+  }
+
+  private async _doConnect(): Promise<void> {
     switch (this._config.mode) {
       case "cdp": {
         if (!this._config.cdpUrl) {
@@ -214,54 +230,58 @@ export class BrowserSession implements SessionRef {
     }
   }
 
-  // ===== Page Setup =====
+  // ===== Page Lifecycle =====
+
+  /** Unified tab cleanup — removes from _pages, tab groups, and picks next tab if needed. */
+  private _cleanupTab(tabId: string): void {
+    this._pages.delete(tabId);
+
+    // Remove from any tab group
+    for (const group of this._tabGroups.values()) {
+      group.tabs.delete(tabId);
+    }
+
+    // If this was the current tab, pick the next non-closed one
+    if (this._currentTabId === tabId) {
+      let found = false;
+      for (const [nextId, nextPage] of this._pages) {
+        if (!nextPage.isClosed()) {
+          this._currentTabId = nextId;
+          this._page = nextPage;
+          this.snapshot = new PageSnapshot(nextPage);
+          this.executor = new ActionExecutor(nextPage, this);
+          found = true;
+          break;
+        }
+      }
+      if (!found) {
+        this._currentTabId = null;
+        this._page = null;
+        this.snapshot = null;
+        this.executor = null;
+      }
+    }
+  }
 
   private _setupPageListeners(tabId: string, page: Page): void {
     page.on("popup", (popup) => this._handleNewPage(popup).catch((e) =>
       logger.warn({ err: e }, "Error handling popup"),
     ));
 
+    page.on("close", () => {
+      this._cleanupTab(tabId);
+    });
+
     page.on("crash", () => {
       logger.error({ tabId }, "Page crashed — removing from registry");
-      this._pages.delete(tabId);
-      if (this._currentTabId === tabId) {
-        this._currentTabId = null;
-        this._page = null;
-        this.snapshot = null;
-        this.executor = null;
-      }
+      this._cleanupTab(tabId);
     });
   }
 
   private async _handleNewPage(page: Page): Promise<void> {
     const tabId = nextTabId();
     this._pages.set(tabId, page);
-
-    const cleanupOnGone = () => {
-      this._pages.delete(tabId);
-      if (this._currentTabId === tabId) {
-        const nextEntry = this._pages.entries().next();
-        if (!nextEntry.done) {
-          const [nextId, nextPage] = nextEntry.value;
-          this._currentTabId = nextId;
-          this._page = nextPage;
-          this.snapshot = new PageSnapshot(nextPage);
-          this.executor = new ActionExecutor(nextPage, this);
-        } else {
-          this._currentTabId = null;
-          this._page = null;
-          this.snapshot = null;
-          this.executor = null;
-        }
-      }
-    };
-
-    page.on("close", cleanupOnGone);
-    page.on("crash", () => {
-      logger.error({ tabId }, "Auto-registered page crashed — removing from registry");
-      cleanupOnGone();
-    });
-
+    this._setupPageListeners(tabId, page);
     logger.info({ tabId, url: page.url() }, "New page auto-registered");
   }
 
@@ -303,7 +323,7 @@ export class BrowserSession implements SessionRef {
       logger.debug("Network idle timeout — continuing");
     }
 
-    return `Navigated to ${url}`;
+    return `Navigated to ${page.url()}`;
   }
 
   // ===== Snapshot =====
@@ -324,6 +344,10 @@ export class BrowserSession implements SessionRef {
       return { snapshotText: "<empty>", elements: {} };
     }
     return this.snapshot.getFullResult(options);
+  }
+
+  getLastElements(): Record<string, unknown> {
+    return this.snapshot?.getLastElements() ?? {};
   }
 
   // ===== Action Execution =====
@@ -381,23 +405,14 @@ export class BrowserSession implements SessionRef {
     try {
       if (!page.isClosed()) {
         await page.close();
+        // close event triggers _cleanupTab automatically
+      } else {
+        // Already closed — clean up manually
+        this._cleanupTab(tabId);
       }
     } catch (e) {
       logger.warn({ tabId, err: e }, "Error closing page");
-    }
-    this._pages.delete(tabId);
-
-    if (tabId === this._currentTabId) {
-      const nextEntry = this._pages.entries().next();
-      if (!nextEntry.done) {
-        const [nextId] = nextEntry.value;
-        await this.switchToTab(nextId);
-      } else {
-        this._currentTabId = null;
-        this._page = null;
-        this.snapshot = null;
-        this.executor = null;
-      }
+      this._cleanupTab(tabId);
     }
 
     return true;
@@ -423,10 +438,6 @@ export class BrowserSession implements SessionRef {
 
     this._pages.set(tabId, page);
     this._setupPageListeners(tabId, page);
-
-    page.on("close", () => {
-      this._pages.delete(tabId);
-    });
 
     return [tabId, page];
   }
@@ -480,11 +491,6 @@ export class BrowserSession implements SessionRef {
     this._pages.set(tabId, page);
     this._setupPageListeners(tabId, page);
 
-    page.on("close", () => {
-      this._pages.delete(tabId);
-      group!.tabs.delete(tabId);
-    });
-
     logger.info({ tabId, taskId, groupTitle: group.title }, "Created tab in group");
     return [tabId, page];
   }
@@ -493,29 +499,9 @@ export class BrowserSession implements SessionRef {
     const group = this._tabGroups.get(taskId);
     if (!group) return false;
 
-    const tabEntries = [...group.tabs];
-    for (const [tabId, page] of tabEntries) {
-      try {
-        if (!page.isClosed()) {
-          await page.close();
-        }
-        this._pages.delete(tabId);
-      } catch (e) {
-        logger.warn({ tabId, err: e }, "Error closing tab in group");
-      }
-    }
-    group.tabs.clear();
-
-    if (this._currentTabId && !this._pages.has(this._currentTabId)) {
-      const nextEntry = this._pages.entries().next();
-      if (!nextEntry.done) {
-        await this.switchToTab(nextEntry.value[0]);
-      } else {
-        this._currentTabId = null;
-        this._page = null;
-        this.snapshot = null;
-        this.executor = null;
-      }
+    const tabIds = [...group.tabs.keys()];
+    for (const tabId of tabIds) {
+      await this.closeTab(tabId);
     }
 
     this._tabGroups.delete(taskId);
@@ -630,8 +616,12 @@ export class BrowserSession implements SessionRef {
   // ===== Cleanup =====
 
   async close(): Promise<void> {
-    // Close all pages
-    for (const [tabId, page] of this._pages) {
+    // Snapshot pages and clear map first so close event handlers are harmless no-ops
+    const pagesToClose = [...this._pages.values()];
+    this._pages.clear();
+    this._tabGroups.clear();
+
+    for (const page of pagesToClose) {
       try {
         if (!page.isClosed()) {
           await page.close();
@@ -640,9 +630,6 @@ export class BrowserSession implements SessionRef {
         // best effort
       }
     }
-
-    this._pages.clear();
-    this._tabGroups.clear();
     this._page = null;
     this._currentTabId = null;
     this.snapshot = null;
@@ -676,13 +663,14 @@ export class BrowserSession implements SessionRef {
   }
 
   static async closeAllSessions(): Promise<void> {
-    for (const session of BrowserSession._instances.values()) {
+    const sessions = [...BrowserSession._instances.values()];
+    BrowserSession._instances.clear();
+    for (const session of sessions) {
       try {
         await session.close();
       } catch (e) {
         logger.error({ sessionId: session._sessionId, err: e }, "Error closing session");
       }
     }
-    BrowserSession._instances.clear();
   }
 }

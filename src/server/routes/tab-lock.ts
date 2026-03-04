@@ -20,15 +20,14 @@ export function registerTabLockRoute(app: FastifyInstance) {
       return reply.code(400).send({ error: "tabId and owner are required" });
     }
 
-    const existing = getLock(tabId);
-    if (existing) {
+    const lock = acquireLock(tabId, owner, ttlMs);
+    if (!lock) {
+      const existing = getLock(tabId);
       return reply.code(409).send({
         error: "Tab is already locked",
         lock: existing,
       });
     }
-
-    const lock = acquireLock(tabId, owner, ttlMs);
     return { tabId, lock };
   });
 

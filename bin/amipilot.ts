@@ -8,7 +8,7 @@
  *
  * Options:
  *   --port, -p       Server port (default: 9867)
- *   --host, -h       Bind address (default: 127.0.0.1)
+ *   --host           Bind address (default: 127.0.0.1)
  *   --token          Auth token
  *   --headless       Run headless (default: true)
  *   --no-headless    Run with visible browser
@@ -43,7 +43,7 @@ function hasFlag(names: string[]): boolean {
   return names.some((n) => args.includes(n));
 }
 
-if (hasFlag(["--help"])) {
+if (hasFlag(["--help", "-h"])) {
   console.log(`
 AmiPilot — AI browser automation engine
 
@@ -74,7 +74,12 @@ const port = parseInt(
     || process.env.AMIPILOT_PORT
     || process.env.BRIDGE_PORT
     || "9867",
+  10,
 );
+if (Number.isNaN(port) || port < 0 || port > 65535) {
+  console.error("Error: invalid port number");
+  process.exit(1);
+}
 
 const host =
   getArg(["--host"])
@@ -130,10 +135,27 @@ async function main() {
     console.log(`Auth: disabled (set AMIPILOT_TOKEN to enable)`);
   }
 
-  // Graceful shutdown
+  // Graceful shutdown with forced exit timeout
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) {
+      console.log("Forced exit.");
+      process.exit(1);
+    }
+    shuttingDown = true;
     console.log("\nShutting down...");
-    await server.close();
+
+    const forceTimer = setTimeout(() => {
+      console.error("Shutdown timed out — forcing exit");
+      process.exit(1);
+    }, 10_000);
+    forceTimer.unref();
+
+    try {
+      await server.close();
+    } catch (e) {
+      console.error("Error during shutdown:", e);
+    }
     process.exit(0);
   };
 

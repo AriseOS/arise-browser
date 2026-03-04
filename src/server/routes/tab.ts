@@ -16,31 +16,35 @@ export function registerTabRoute(app: FastifyInstance) {
       return reply.code(400).send({ error: "action is required (create, close, switch)" });
     }
 
-    switch (action) {
-      case "create": {
-        const [newTabId] = await session.createNewTab(url);
-        await session.switchToTab(newTabId);
-        return { tabId: newTabId, action: "created" };
-      }
-
-      case "close": {
-        if (!tabId) {
-          return reply.code(400).send({ error: "tabId is required for close" });
+    try {
+      switch (action) {
+        case "create": {
+          const [newTabId] = await session.createNewTab(url);
+          await session.switchToTab(newTabId);
+          return { tabId: newTabId, action: "created" };
         }
-        const closed = await session.closeTab(tabId);
-        return { tabId, action: "closed", success: closed };
-      }
 
-      case "switch": {
-        if (!tabId) {
-          return reply.code(400).send({ error: "tabId is required for switch" });
+        case "close": {
+          if (!tabId) {
+            return reply.code(400).send({ error: "tabId is required for close" });
+          }
+          const closed = await session.closeTab(tabId);
+          return { tabId, action: "closed", success: closed };
         }
-        const switched = await session.switchToTab(tabId);
-        return { tabId, action: "switched", success: switched };
-      }
 
-      default:
-        return reply.code(400).send({ error: `Unknown action: ${action}` });
+        case "switch": {
+          if (!tabId) {
+            return reply.code(400).send({ error: "tabId is required for switch" });
+          }
+          const switched = await session.switchToTab(tabId);
+          return { tabId, action: "switched", success: switched };
+        }
+
+        default:
+          return reply.code(400).send({ error: `Unknown action: ${action}` });
+      }
+    } catch (e) {
+      return reply.code(500).send({ error: "Tab operation failed" });
     }
   });
 }

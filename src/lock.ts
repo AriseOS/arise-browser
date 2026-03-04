@@ -28,6 +28,7 @@ export function acquireLock(tabId: string, owner: string, ttlMs = DEFAULT_TTL_MS
 }
 
 export function releaseLock(tabId: string, owner: string): boolean {
+  cleanup(tabId);
   const existing = locks.get(tabId);
   if (!existing) return false;
   if (existing.owner !== owner) return false;

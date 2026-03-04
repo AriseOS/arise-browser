@@ -334,7 +334,7 @@ export class ActionExecutor {
     };
 
     if ("timeout" in action) {
-      const ms = Number(action.timeout);
+      const ms = Math.min(Math.max(0, Number(action.timeout) || 0), 30_000);
       details.wait_type = "timeout";
       details.timeout = ms;
       await new Promise((resolve) => setTimeout(resolve, ms));
@@ -363,16 +363,21 @@ export class ActionExecutor {
     const target = `[aria-ref='${escapeRef(ref)}']`;
     const details: Record<string, unknown> = { ref, target };
 
-    await this.page.waitForSelector(target, { timeout: this.defaultTimeout });
-    const txt = await this.page.textContent(target);
+    try {
+      await this.page.waitForSelector(target, { timeout: this.defaultTimeout });
+      const txt = await this.page.textContent(target);
 
-    details.extracted_text = txt;
-    details.text_length = txt ? txt.length : 0;
+      details.extracted_text = txt;
+      details.text_length = txt ? txt.length : 0;
 
-    return {
-      message: `Extracted: ${txt ? txt.slice(0, 100) : "None"}`,
-      details,
-    };
+      return {
+        message: `Extracted: ${txt ? txt.slice(0, 100) : "None"}`,
+        details,
+      };
+    } catch (e) {
+      details.error = String(e);
+      return { message: `Error: extract failed: ${e}`, details };
+    }
   }
 
   // ===== Scroll =====
@@ -497,7 +502,7 @@ export class ActionExecutor {
         if (!found) throw new Error(`No element found at coordinates (${xCoord}, ${yCoord})`);
         return { message: "Action 'dblclick' performed on the target", details };
       } else {
-        return { message: `Invalid control action ${control}`, details };
+        return { message: `Error: Invalid control action '${control}'`, details };
       }
     } catch (e) {
       return { message: `Action failed: ${e}`, details };

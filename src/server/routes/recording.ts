@@ -6,15 +6,44 @@ import type { LearnData, LearnStep } from "../../types/index.js";
 // Active recorders by recording ID
 const recorders = new Map<string, BehaviorRecorder>();
 
+const MAX_RECORDERS = 10;
+
+/** Stop and remove all active recorders (called on server shutdown). */
+export async function cleanupRecorders(): Promise<void> {
+  for (const [id, recorder] of recorders) {
+    try {
+      if (recorder.isRecording()) {
+        await recorder.stopRecording();
+      }
+    } catch {
+      // best effort
+    }
+  }
+  recorders.clear();
+}
+
 export function registerRecordingRoutes(app: FastifyInstance) {
+  // Cleanup recorders on server close
+  app.addHook("onClose", async () => {
+    await cleanupRecorders();
+  });
+
   app.post("/recording/start", async (_request, reply) => {
     const session = (app as any).session as BrowserSession;
 
-    const recorder = new BehaviorRecorder(true);
-    await recorder.startRecording(session);
-    recorders.set(recorder.sessionId, recorder);
+    if (recorders.size >= MAX_RECORDERS) {
+      return reply.code(429).send({ error: `Maximum ${MAX_RECORDERS} concurrent recordings reached` });
+    }
 
-    return { recordingId: recorder.sessionId };
+    try {
+      const recorder = new BehaviorRecorder(true);
+      await recorder.startRecording(session);
+      recorders.set(recorder.sessionId, recorder);
+
+      return { recordingId: recorder.sessionId };
+    } catch (e) {
+      return reply.code(500).send({ error: "Failed to start recording" });
+    }
   });
 
   app.post("/recording/stop", async (request: FastifyRequest<{ Body: { recordingId: string } }>, reply) => {
@@ -29,10 +58,14 @@ export function registerRecordingRoutes(app: FastifyInstance) {
       return reply.code(404).send({ error: "Recording not found" });
     }
 
-    const result = await recorder.stopRecording();
-    recorders.delete(recordingId);
-
-    return result;
+    try {
+      const result = await recorder.stopRecording();
+      recorders.delete(recordingId);
+      return result;
+    } catch (e) {
+      recorders.delete(recordingId);
+      return reply.code(500).send({ error: "Failed to stop recording" });
+    }
   });
 
   app.get("/recording/status", async (request: FastifyRequest<{ Querystring: { recordingId?: string } }>) => {

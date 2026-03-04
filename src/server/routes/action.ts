@@ -66,7 +66,11 @@ export function registerActionRoute(app: FastifyInstance) {
       return reply.code(400).send({ error: "action type (kind or type) is required" });
     }
 
-    const result = await session.execAction(action);
-    return result;
+    try {
+      const result = await session.execAction(action);
+      return result;
+    } catch (e) {
+      return reply.code(500).send({ error: "Action execution failed" });
+    }
   });
 }

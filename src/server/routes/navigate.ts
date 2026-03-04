@@ -16,13 +16,17 @@ export function registerNavigateRoute(app: FastifyInstance) {
       return reply.code(400).send({ error: "url is required" });
     }
 
-    if (newTab) {
-      const [tabId] = await session.createNewTab(url);
-      await session.switchToTab(tabId);
-      return { tabId, url };
-    }
+    try {
+      if (newTab) {
+        const [tabId] = await session.createNewTab(url);
+        await session.switchToTab(tabId);
+        return { tabId, url };
+      }
 
-    const result = await session.visit(url);
-    return { message: result, url };
+      const result = await session.visit(url);
+      return { message: result, url };
+    } catch (e) {
+      return reply.code(500).send({ error: "Navigation failed" });
+    }
   });
 }

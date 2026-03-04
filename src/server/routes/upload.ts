@@ -31,7 +31,7 @@ export function registerUploadRoute(app: FastifyInstance) {
       await fileInput.setInputFiles(filePath);
       return { success: true, ref, filePath };
     } catch (e) {
-      return reply.code(500).send({ error: String(e) });
+      return reply.code(500).send({ error: "Upload failed" });
     }
   });
 }

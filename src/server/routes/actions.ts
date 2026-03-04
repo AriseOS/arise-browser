@@ -16,22 +16,26 @@ export function registerActionsRoute(app: FastifyInstance) {
       return reply.code(400).send({ error: "actions array is required" });
     }
 
-    const results: ActionResult[] = [];
+    try {
+      const results: ActionResult[] = [];
 
-    for (const action of actions) {
-      const result = await session.execAction(action);
-      results.push(result);
+      for (const action of actions) {
+        const result = await session.execAction(action);
+        results.push(result);
 
-      if (stopOnError && !result.success) {
-        break;
+        if (stopOnError && !result.success) {
+          break;
+        }
       }
-    }
 
-    return {
-      results,
-      total: actions.length,
-      executed: results.length,
-      all_success: results.every((r) => r.success),
-    };
+      return {
+        results,
+        total: actions.length,
+        executed: results.length,
+        all_success: results.every((r) => r.success),
+      };
+    } catch (e) {
+      return reply.code(500).send({ error: "Batch action execution failed" });
+    }
   });
 }

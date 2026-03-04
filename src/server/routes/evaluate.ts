@@ -18,7 +18,7 @@ export function registerEvaluateRoute(app: FastifyInstance) {
       const result = await session.evaluate(expression);
       return { result };
     } catch (e) {
-      return reply.code(500).send({ error: String(e) });
+      return reply.code(500).send({ error: "Evaluation failed" });
     }
   });
 }

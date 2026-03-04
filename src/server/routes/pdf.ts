@@ -16,7 +16,8 @@ export function registerPdfRoute(app: FastifyInstance) {
         .type("application/pdf")
         .send(buffer);
     } catch (e) {
-      return reply.code(400).send({ error: String(e) });
+      const msg = e instanceof Error ? e.message : "PDF export failed";
+      return reply.code(400).send({ error: msg });
     }
   });
 }

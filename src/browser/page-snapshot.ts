@@ -56,6 +56,7 @@ export class PageSnapshot {
   private page: Page;
   private snapshotData: string | null = null;
   private _lastUrl: string | null = null;
+  private _lastElements: Record<string, unknown> = {};
   lastInfo: { isDiff: boolean; priorities: number[] } = {
     isDiff: false,
     priorities: [1, 2, 3],
@@ -90,6 +91,7 @@ export class PageSnapshot {
         "snapshotText" in snapshotResult
       ) {
         const result = snapshotResult as SnapshotResult;
+        this._lastElements = result.elements ?? {};
         snapshotText = result.snapshotText;
 
         const metadata = result.metadata;
@@ -114,19 +116,18 @@ export class PageSnapshot {
 
       const formatted = PageSnapshot._formatSnapshot(snapshotText || "<empty>");
 
+      const hadPreviousData = this.snapshotData !== null;
       let output = formatted;
-      if (diffOnly && this.snapshotData) {
-        output = PageSnapshot._computeDiff(this.snapshotData, formatted);
+      if (diffOnly && hadPreviousData) {
+        output = PageSnapshot._computeDiff(this.snapshotData!, formatted);
       }
 
       this._lastUrl = currentUrl;
       this.snapshotData = formatted;
 
-      const prioritiesIncluded = PageSnapshot._detectPriorities(
-        diffOnly ? this.snapshotData || formatted : formatted,
-      );
+      const prioritiesIncluded = PageSnapshot._detectPriorities(output);
       this.lastInfo = {
-        isDiff: diffOnly && this.snapshotData !== null,
+        isDiff: diffOnly && hadPreviousData,
         priorities: prioritiesIncluded,
       };
 
@@ -139,6 +140,10 @@ export class PageSnapshot {
       logger.error({ err: exc }, "Snapshot capture failed");
       return `Error: Could not capture page snapshot ${exc}`;
     }
+  }
+
+  getLastElements(): Record<string, unknown> {
+    return this._lastElements;
   }
 
   async getFullResult(options?: {

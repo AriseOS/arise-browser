@@ -11,11 +11,14 @@
  */
 
 import { readFileSync } from "node:fs";
+import { createHash } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Page, Response as PwResponse, CDPSession } from "playwright";
 import { createLogger } from "../logger.js";
 import type { RecordedOperation, RecordingResult, SnapshotRecord } from "../types/index.js";
+
+const MAX_OPERATIONS = 10_000;
 
 const logger = createLogger("behavior-recorder");
 
@@ -225,10 +228,11 @@ export class BehaviorRecorder {
       return;
     }
 
+    let cdpSession: CDPSession | null = null;
     try {
       logger.debug({ tabId }, "Setting up recording for tab");
 
-      const cdpSession = await page.context().newCDPSession(page);
+      cdpSession = await page.context().newCDPSession(page);
 
       await cdpSession.send("Runtime.enable");
       await cdpSession.send("Page.enable");
@@ -269,6 +273,10 @@ export class BehaviorRecorder {
 
       logger.info({ tabId }, "Recording setup complete for tab");
     } catch (e) {
+      // Clean up CDP session on partial failure to prevent leak
+      if (cdpSession) {
+        try { await cdpSession.detach(); } catch { /* best effort */ }
+      }
       logger.error({ tabId, err: e }, "Failed to setup recording for tab");
     }
   }
@@ -325,6 +333,10 @@ export class BehaviorRecorder {
 
       data.tab_id = tabId;
 
+      if (this.operations.length >= MAX_OPERATIONS) {
+        logger.warn({ max: MAX_OPERATIONS }, "Operations cap reached — dropping oldest");
+        this.operations.splice(0, 1000); // drop oldest 1000
+      }
       this.operations.push(data);
 
       this._logOperation(data);
@@ -405,6 +417,9 @@ export class BehaviorRecorder {
         tab_id: tabId,
       };
 
+      if (this.operations.length >= MAX_OPERATIONS) {
+        this.operations.splice(0, 1000);
+      }
       this.operations.push(data);
       this._logOperation(data);
 
@@ -425,7 +440,6 @@ export class BehaviorRecorder {
   private async _captureSnapshot(url: string, tabId: string): Promise<void> {
     if (!this._browserSession || !this._enableSnapshotCapture) return;
 
-    const { createHash } = await import("node:crypto");
     const urlHash = createHash("md5").update(url).digest("hex").slice(0, 12);
 
     if (this.snapshots[urlHash]) return;

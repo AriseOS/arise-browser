@@ -12,10 +12,14 @@ interface SetCookiesBody {
 }
 
 export function registerCookiesRoute(app: FastifyInstance) {
-  app.get("/cookies", async () => {
+  app.get("/cookies", async (_request, reply) => {
     const session = (app as any).session as BrowserSession;
-    const cookies = await session.getCookies();
-    return { cookies };
+    try {
+      const cookies = await session.getCookies();
+      return { cookies };
+    } catch (e) {
+      return reply.code(500).send({ error: "Failed to get cookies" });
+    }
   });
 
   app.post("/cookies", async (request: FastifyRequest<{ Body: SetCookiesBody }>, reply) => {
@@ -26,7 +30,11 @@ export function registerCookiesRoute(app: FastifyInstance) {
       return reply.code(400).send({ error: "cookies array is required" });
     }
 
-    await session.setCookies(cookies);
-    return { set: cookies.length };
+    try {
+      await session.setCookies(cookies);
+      return { set: cookies.length };
+    } catch (e) {
+      return reply.code(500).send({ error: "Failed to set cookies" });
+    }
   });
 }

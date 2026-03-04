@@ -39,6 +39,8 @@ export async function createServer(
 
   if (token) {
     app.addHook("onRequest", authMiddleware(token));
+  } else {
+    logger.warn("No auth token configured — all endpoints are unauthenticated. Set AMIPILOT_TOKEN to enable auth.");
   }
 
   // Create and attach browser session

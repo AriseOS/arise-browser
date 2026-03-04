@@ -26,14 +26,20 @@ function getOrCreateRoot(): Logger {
   if (_rootLogger) return _rootLogger;
 
   const isDebug = !!(process.env.AMIPILOT_DEBUG || process.env.LOG_LEVEL === "debug");
+  const isProd = process.env.NODE_ENV === "production";
 
-  _rootLogger = pino({
+  const opts: Record<string, unknown> = {
     level: isDebug ? "debug" : (process.env.LOG_LEVEL ?? "info"),
-    transport: {
+  };
+
+  if (!isProd) {
+    opts.transport = {
       target: "pino-pretty",
       options: { colorize: true },
-    },
-  }) as unknown as Logger;
+    };
+  }
+
+  _rootLogger = pino(opts) as unknown as Logger;
 
   return _rootLogger;
 }
