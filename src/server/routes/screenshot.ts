@@ -20,7 +20,9 @@ export function registerScreenshotRoute(app: FastifyInstance) {
       return reply.code(500).send({ error: "Screenshot failed" });
     }
 
-    if (raw === "true" || raw === "1") {
+    const acceptHeader = request.headers.accept || "";
+    const wantsRaw = raw === "true" || raw === "1" || acceptHeader.includes("image/");
+    if (wantsRaw) {
       return reply
         .type("image/jpeg")
         .send(buffer);

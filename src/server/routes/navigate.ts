@@ -20,11 +20,17 @@ export function registerNavigateRoute(app: FastifyInstance) {
       if (newTab) {
         const [tabId] = await session.createNewTab(url);
         await session.switchToTab(tabId);
-        return { tabId, url };
+        const page = session.currentPage;
+        let title = "";
+        try { title = page && !page.isClosed() ? await page.title() : ""; } catch { /* closed */ }
+        return { tabId, url: page && !page.isClosed() ? page.url() : url, title };
       }
 
-      const result = await session.visit(url);
-      return { message: result, url };
+      await session.visit(url);
+      const page = session.currentPage;
+      let title = "";
+      try { title = page && !page.isClosed() ? await page.title() : ""; } catch { /* closed */ }
+      return { url: page && !page.isClosed() ? page.url() : url, title };
     } catch (e) {
       return reply.code(500).send({ error: "Navigation failed" });
     }

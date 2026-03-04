@@ -6,15 +6,17 @@ interface SnapshotQuery {
   format?: "yaml" | "json" | "compact" | "text";
   diff?: string;
   viewportLimit?: string;
+  filter?: "interactive" | "all";
 }
 
 export function registerSnapshotRoute(app: FastifyInstance) {
   app.get("/snapshot", async (request: FastifyRequest<{ Querystring: SnapshotQuery }>, reply) => {
     const session = (app as any).session as BrowserSession;
-    const { format = "yaml", diff, viewportLimit } = request.query;
+    const { format = "yaml", diff, viewportLimit, filter } = request.query;
 
     const diffOnly = diff === "true" || diff === "1";
     const vpLimit = viewportLimit === "true" || viewportLimit === "1";
+    const interactiveOnly = filter === "interactive";
 
     try {
       if (format === "json") {
@@ -22,12 +24,23 @@ export function registerSnapshotRoute(app: FastifyInstance) {
         const elements = result.elements as Record<string, unknown>;
 
         // Convert to Pinchtab JSON format
+        const INTERACTIVE_ROLES = new Set([
+          "link", "button", "textbox", "checkbox", "radio",
+          "combobox", "menuitem", "tab", "switch", "slider",
+          "spinbutton", "searchbox", "option", "menuitemcheckbox",
+          "menuitemradio", "treeitem",
+        ]);
+
         const nodes: Record<string, unknown>[] = [];
         let count = 0;
         if (elements && typeof elements === "object") {
           for (const [ref, el] of Object.entries(elements)) {
             if (el && typeof el === "object") {
-              nodes.push({ ref, ...(el as Record<string, unknown>) });
+              const elObj = el as Record<string, unknown>;
+              if (interactiveOnly && !INTERACTIVE_ROLES.has(String(elObj.role || ""))) {
+                continue;
+              }
+              nodes.push({ ref, ...elObj });
               count++;
             }
           }
@@ -51,15 +64,23 @@ export function registerSnapshotRoute(app: FastifyInstance) {
       });
 
       if (format === "compact") {
-        const lines = snapshotText
+        let lines = snapshotText
           .split("\n")
           .filter((l) => l.includes("[ref="))
           .map((l) => l.trim());
-        return { snapshot: lines.join("\n"), format: "compact" };
+        if (interactiveOnly) {
+          lines = lines.filter((l) => {
+            const m = l.match(/^\[ref=\w+\]\s*(\w+)/);
+            return m && ["link", "button", "textbox", "checkbox", "radio",
+              "combobox", "menuitem", "tab", "switch", "slider",
+              "spinbutton", "searchbox", "option"].includes(m[1]);
+          });
+        }
+        return reply.type("text/plain").send(lines.join("\n"));
       }
 
       if (format === "text") {
-        return { snapshot: snapshotText, format: "text" };
+        return reply.type("text/plain").send(snapshotText);
       }
 
       // Default: yaml
