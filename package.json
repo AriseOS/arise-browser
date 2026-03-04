@@ -1,0 +1,51 @@
+{
+  "name": "amipilot",
+  "version": "0.1.0",
+  "description": "AI browser automation engine — persistent refs, multi-strategy actions, behavior recording",
+  "type": "module",
+  "main": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "bin": {
+    "amipilot": "./dist/bin/amipilot.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/src/index.js",
+      "types": "./dist/src/index.d.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc && cp -r src/browser/scripts dist/src/browser/scripts",
+    "dev": "tsc --watch",
+    "start": "node dist/bin/amipilot.js",
+    "clean": "rm -rf dist"
+  },
+  "files": [
+    "dist",
+    "src/browser/scripts/*.js",
+    "LICENSE"
+  ],
+  "keywords": [
+    "browser-automation",
+    "ai-agent",
+    "playwright",
+    "accessibility",
+    "web-scraping",
+    "mcp",
+    "openclaw"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "fastify": "^5.0.0",
+    "pino": "^9.5.0",
+    "pino-pretty": "^13.0.0",
+    "playwright": "^1.48.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.6.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

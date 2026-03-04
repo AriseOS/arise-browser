@@ -1,0 +1,130 @@
+{
+  "name": "amipilot",
+  "version": "0.1.0",
+  "description": "AI browser automation — persistent refs, multi-strategy clicks, behavior recording",
+  "tools": [
+    {
+      "name": "amipilot",
+      "description": "Control a Chromium browser for web automation. Actions: navigate, snapshot, click, type, scroll, hover, select, focus, press_key, screenshot, text, tabs, recording.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "action": {
+            "type": "string",
+            "description": "The action to perform",
+            "enum": [
+              "navigate",
+              "snapshot",
+              "click",
+              "type",
+              "scroll",
+              "hover",
+              "select",
+              "focus",
+              "press_key",
+              "screenshot",
+              "text",
+              "tabs",
+              "tab_create",
+              "tab_close",
+              "tab_switch",
+              "evaluate",
+              "recording_start",
+              "recording_stop",
+              "recording_export"
+            ]
+          },
+          "url": {
+            "type": "string",
+            "description": "URL for navigate action"
+          },
+          "ref": {
+            "type": "string",
+            "description": "Element ref for click/type/hover/select/focus actions"
+          },
+          "text": {
+            "type": "string",
+            "description": "Text to type"
+          },
+          "value": {
+            "type": "string",
+            "description": "Value for select action"
+          },
+          "keys": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Keys for press_key action"
+          },
+          "direction": {
+            "type": "string",
+            "enum": ["up", "down"],
+            "description": "Scroll direction"
+          },
+          "amount": {
+            "type": "number",
+            "description": "Scroll amount in pixels"
+          },
+          "format": {
+            "type": "string",
+            "enum": ["yaml", "json", "compact", "text"],
+            "description": "Snapshot format"
+          },
+          "diff": {
+            "type": "boolean",
+            "description": "Return diff only for snapshot"
+          },
+          "tabId": {
+            "type": "string",
+            "description": "Tab ID for tab operations"
+          },
+          "expression": {
+            "type": "string",
+            "description": "JavaScript expression for evaluate"
+          },
+          "recordingId": {
+            "type": "string",
+            "description": "Recording ID for recording operations"
+          },
+          "task": {
+            "type": "string",
+            "description": "Task description for recording export"
+          }
+        },
+        "required": ["action"]
+      }
+    }
+  ],
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "port": {
+        "type": "number",
+        "description": "Server port",
+        "default": 9867
+      },
+      "host": {
+        "type": "string",
+        "description": "Bind address",
+        "default": "127.0.0.1"
+      },
+      "token": {
+        "type": "string",
+        "description": "Bearer auth token"
+      },
+      "headless": {
+        "type": "boolean",
+        "description": "Run headless",
+        "default": true
+      },
+      "profile": {
+        "type": "string",
+        "description": "Browser profile directory"
+      }
+    }
+  },
+  "lifecycle": {
+    "start": "npx amipilot --port {{port}} --host {{host}}",
+    "health": "http://{{host}}:{{port}}/health",
+    "stop": "SIGTERM"
+  }
+}
