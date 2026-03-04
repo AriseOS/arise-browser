@@ -317,15 +317,39 @@
 
     // === Complete snapshot.js logic preservation ===
 
+    function isNativeFormControl(element) {
+        if (!element || element.nodeType !== Node.ELEMENT_NODE || !element.tagName) return false;
+        const tagName = element.tagName.toLowerCase();
+        return tagName === 'select' || tagName === 'input' || tagName === 'textarea' || tagName === 'button';
+    }
+
+    // Keep transparent native controls that are still actionable (common in overlay-based UI widgets).
+    function isTransparentButActionableControl(element, style) {
+        if (!isNativeFormControl(element)) return false;
+        if (!style) return false;
+        if (style.display === 'none' || style.visibility === 'hidden') return false;
+        if (element.hidden || element.getAttribute('aria-hidden') === 'true') return false;
+        if (element.hasAttribute('disabled') || element.disabled) return false;
+
+        const opacity = Number.parseFloat(style.opacity || '1');
+        if (!Number.isFinite(opacity) || opacity !== 0) return false;
+
+        const rect = element.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    }
+
     function isVisible(node) {
         // Check if node is null or not a valid DOM node
         if (!node || typeof node.nodeType === 'undefined') return false;
         if (node.nodeType !== Node.ELEMENT_NODE) return true;
 
         try {
-        const style = window.getComputedStyle(node);
-            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0')
+            const style = window.getComputedStyle(node);
+            if (style.display === 'none' || style.visibility === 'hidden')
                 return false;
+            const transparentActionable = isTransparentButActionableControl(node, style);
+            const opacity = Number.parseFloat(style.opacity || '1');
+            if (Number.isFinite(opacity) && opacity === 0 && !transparentActionable) return false;
             // An element with `display: contents` is not rendered itself, but its children are.
             if (style.display === 'contents')
                 return true;
@@ -616,9 +640,15 @@
             if (['script', 'style', 'meta', 'noscript'].includes(tagName))
                 return;
 
-            // Check if element is explicitly hidden by CSS - if so, skip entirely including children
+            // Check if element is explicitly hidden by CSS - if so, skip entirely including children.
+            // Exception: preserve transparent but actionable native controls (e.g. hidden select under overlay UI).
             const style = window.getComputedStyle(element);
-            if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') {
+            if (style.display === 'none' || style.visibility === 'hidden') {
+                return;
+            }
+            const transparentActionable = isTransparentButActionableControl(element, style);
+            const opacity = Number.parseFloat(style.opacity || '1');
+            if (Number.isFinite(opacity) && opacity === 0 && !transparentActionable) {
                 return;
             }
 

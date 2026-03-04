@@ -5,11 +5,12 @@
  * mouse_control, mouse_drag, press_key, navigate, back, forward,
  * hover, focus
  *
- * Click: aria-ref selector, Ctrl+Click for new tab, force click fallback.
+ * Click: supports aria-ref/CSS selector, prefers regular click,
+ * and validates observable state change to avoid false success.
  * Mouse control: JS elementFromPoint + dispatchEvent.
  */
 
-import type { Page } from "playwright";
+import type { Locator, Page } from "playwright";
 import { BrowserConfig } from "./config.js";
 import { createLogger } from "../logger.js";
 import type { ActionDict, ActionResult, SessionRef } from "../types/index.js";
@@ -18,6 +19,55 @@ const logger = createLogger("action-executor");
 
 function escapeRef(ref: string): string {
   return ref.replace(/['"\\]/g, "");
+}
+
+function escapeRegex(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+interface SelectState {
+  tagName: string;
+  role: string;
+  value: string;
+  selectedText: string;
+  text: string;
+  ariaLabel: string;
+  ariaValueText: string;
+}
+
+interface ClickElementDiag {
+  tag: string;
+  href: string | null;
+  closestHref: string | null;
+  role: string | null;
+  text: string;
+  descendantHref: string | null;
+  descendantText: string;
+  descendantCount: number;
+  onclick: boolean;
+  inViewport: boolean;
+}
+
+interface ClickTargetState {
+  role: string;
+  ariaExpanded: string | null;
+  ariaSelected: string | null;
+  ariaPressed: string | null;
+  value: string;
+  checked: boolean | null;
+  text: string;
+  className: string;
+}
+
+interface ClickObservation {
+  pageUrl: string;
+  activeElement: string;
+  targetPresent: boolean;
+  targetState: ClickTargetState | null;
+  dialogCount: number;
+  listboxCount: number;
+  menuCount: number;
+  expandedCount: number;
 }
 
 export class ActionExecutor {
@@ -101,13 +151,16 @@ export class ActionExecutor {
 
   private async _click(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
     const ref = action.ref as string | undefined;
-    if (!ref) {
-      return { message: "Error: click requires ref", details: { error: "missing_ref" } };
+    const selector = action.selector as string | undefined;
+    if (!ref && !selector) {
+      return { message: "Error: click requires ref or selector", details: { error: "missing_target" } };
     }
 
-    const target = `[aria-ref='${escapeRef(ref)}']`;
+    const target = ref ? `[aria-ref='${escapeRef(ref)}']` : selector!;
     const details: Record<string, unknown> = {
-      ref,
+      ref: ref ?? null,
+      selector: selector ?? null,
+      target,
       strategies_tried: [],
       successful_strategy: null,
       click_method: null,
@@ -126,9 +179,9 @@ export class ActionExecutor {
     let clickTarget = element;
 
     // Collect element diagnostics
-    let elementDiag: Record<string, unknown> | null = null;
+    let elementDiag: ClickElementDiag | null = null;
     try {
-      elementDiag = await element.evaluate((el: Element) => {
+      const diag = await element.evaluate((el: Element) => {
         const text = ((el as HTMLElement).innerText || el.textContent || "").trim();
         const rect = el.getBoundingClientRect();
         const inViewport =
@@ -157,6 +210,7 @@ export class ActionExecutor {
           inViewport,
         };
       });
+      elementDiag = diag as ClickElementDiag;
       logger.debug({ elementDiag }, "Click element diagnostics");
     } catch (e) {
       logger.debug({ err: e }, "Click diagnostics failed");
@@ -165,15 +219,15 @@ export class ActionExecutor {
     // Conservative redirect: if container wraps a single link, prefer that link
     try {
       if (elementDiag) {
-        const tag = elementDiag.tag as string;
+        const tag = elementDiag.tag;
         const href = elementDiag.href;
         const closestHref = elementDiag.closestHref;
         const hasOnclick = elementDiag.onclick;
-        const descendantCount = elementDiag.descendantCount as number;
+        const descendantCount = elementDiag.descendantCount;
         const descendantHref = elementDiag.descendantHref;
-        const sourceText = ((elementDiag.text as string) || "").trim();
-        const descendantText = ((elementDiag.descendantText as string) || "").trim();
-        const role = elementDiag.role as string | null;
+        const sourceText = (elementDiag.text || "").trim();
+        const descendantText = (elementDiag.descendantText || "").trim();
+        const role = elementDiag.role;
         const roleIsLink = (role || "").toLowerCase() === "link";
 
         if (
@@ -206,9 +260,15 @@ export class ActionExecutor {
       logger.debug({ err: e }, "Descendant link check failed");
     }
 
-    // Strategy 1: Ctrl+Click (opens links in new tabs)
-    try {
-      if (this.session) {
+    const beforeObservation = await this._captureClickObservation(clickTarget);
+    details.before_observation = beforeObservation;
+
+    const isLikelyLink = this._isLikelyLink(elementDiag);
+    let clickPerformed = false;
+
+    // Strategy 1: Ctrl+Click (links only, when tab session exists)
+    if (isLikelyLink && this.session) {
+      try {
         const context = this.page.context();
         const t0 = performance.now();
 
@@ -236,6 +296,7 @@ export class ActionExecutor {
         }
 
         details.click_method = "ctrl_click_new_tab";
+        clickPerformed = true;
         details.new_tab_created = true;
         details.new_tab_index = newTabId;
         details.ctrl_click_elapsed_ms = elapsedMs;
@@ -244,40 +305,68 @@ export class ActionExecutor {
           message: `Clicked element, opened in new tab ${newTabId}`,
           details,
         };
-      } else {
-        await clickTarget.click({ modifiers: ["ControlOrMeta"] });
-        details.click_method = "ctrl_click_no_session";
-        return { message: `Clicked element (ctrl click): ${target}`, details };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes("Timeout") || msg.includes("timeout")) {
+          // Ctrl+Click was dispatched but no new tab appeared; continue with same-tab verification.
+          details.click_method = "ctrl_click_same_tab";
+          clickPerformed = true;
+        } else {
+          (details.strategies_tried as unknown[]).push({
+            selector: target,
+            method: "ctrl_click",
+            error: msg,
+          });
+        }
       }
-    } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      if (msg.includes("Timeout") || msg.includes("timeout")) {
-        details.click_method = "ctrl_click_same_tab";
-        return { message: `Clicked element (same tab): ${target}`, details };
-      }
-
-      (details.strategies_tried as unknown[]).push({
-        selector: target,
-        method: "ctrl_click",
-        error: msg,
-      });
     }
 
-    // Strategy 2: Force click fallback
-    logger.debug("Falling back to force click...");
-    try {
-      await clickTarget.click({ force: true, timeout: this.defaultTimeout });
-      details.click_method = "force_click";
-      return { message: `Clicked element (force): ${target}`, details };
-    } catch (e) {
-      logger.debug({ err: e }, "Force click also failed");
-      details.click_method = "all_failed";
-      details.error = String(e);
+    // Strategy 2: Regular click (default for non-link elements)
+    if (!clickPerformed) {
+      try {
+        await clickTarget.click({ timeout: this.defaultTimeout });
+        details.click_method = "click";
+        clickPerformed = true;
+      } catch (e) {
+        (details.strategies_tried as unknown[]).push({
+          selector: target,
+          method: "click",
+          error: String(e),
+        });
+      }
+    }
+
+    // Strategy 3: Force click fallback
+    if (!clickPerformed) {
+      logger.debug("Falling back to force click...");
+      try {
+        await clickTarget.click({ force: true, timeout: this.defaultTimeout });
+        details.click_method = "force_click";
+        clickPerformed = true;
+      } catch (e) {
+        logger.debug({ err: e }, "Force click also failed");
+        details.click_method = "all_failed";
+        details.error = String(e);
+        return {
+          message: `Error: All click strategies failed for ${target}`,
+          details,
+        };
+      }
+    }
+
+    await this.page.waitForTimeout(180);
+    const afterObservation = await this._captureClickObservation(clickTarget);
+    details.after_observation = afterObservation;
+
+    if (!this._didClickObservationChange(beforeObservation, afterObservation)) {
+      details.error = "no_state_change";
       return {
-        message: `Error: All click strategies failed for ${target}`,
+        message: `Error: Click had no observable page state change for ${target}`,
         details,
       };
     }
+
+    return { message: `Clicked element (${details.click_method}): ${target}`, details };
   }
 
   // ===== Type =====
@@ -306,21 +395,58 @@ export class ActionExecutor {
 
   private async _select(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
     const ref = action.ref as string | undefined;
+    const selector = action.selector as string | undefined;
     const value = (action.value as string) || "";
 
-    if (!ref) {
-      return { message: "Error: select requires ref", details: { error: "missing_ref" } };
+    if (!ref && !selector) {
+      return { message: "Error: select requires ref or selector", details: { error: "missing_target" } };
     }
 
-    const target = `[aria-ref='${escapeRef(ref)}']`;
-    const details: Record<string, unknown> = { ref, target, value };
+    const target = ref ? `[aria-ref='${escapeRef(ref)}']` : selector!;
+    const details: Record<string, unknown> = { ref: ref ?? null, selector: selector ?? null, target, value };
+    const control = this.page.locator(target).first();
+    const variants = this._buildSelectVariants(value);
+    details.value_variants = variants;
 
     try {
-      await this.page.selectOption(target, value, { timeout: this.defaultTimeout });
-      return { message: `Selected '${value}' in ${target}`, details };
-    } catch (exc) {
-      details.error = String(exc);
-      return { message: `Select failed: ${exc}`, details };
+      const controlCount = await control.count();
+      if (controlCount === 0) {
+        details.error = "element_not_found";
+        return { message: "Error: Select failed, element not found", details };
+      }
+
+      const beforeState = await this._readSelectState(control);
+      details.before_state = beforeState;
+
+      // Strategy 1: Native <select> element
+      try {
+        await control.selectOption(value, { timeout: this.defaultTimeout });
+        const afterNativeState = await this._readSelectState(control);
+        details.native_after_state = afterNativeState;
+
+        if (this._stateMatchesExpected(afterNativeState, variants) || this._stateChanged(beforeState, afterNativeState)) {
+          details.strategy = "native_select";
+          return { message: `Selected '${value}' in ${target}`, details };
+        }
+      } catch (nativeErr) {
+        details.native_error = String(nativeErr);
+      }
+
+      // Strategy 2: Custom dropdown/combobox/listbox controls
+      const customClicked = await this._selectFromCustomControl(control, variants, details);
+      const afterState = await this._readSelectState(control);
+      details.after_state = afterState;
+
+      if (customClicked && (this._stateMatchesExpected(afterState, variants) || this._stateChanged(beforeState, afterState))) {
+        details.strategy = "custom_select";
+        return { message: `Selected '${value}' in ${target}`, details };
+      }
+
+      details.error = "selection_not_verified";
+      return { message: `Select failed: could not verify selection '${value}' in ${target}`, details };
+    } catch (err) {
+      details.error = String(err);
+      return { message: `Select failed: ${err}`, details };
     }
   }
 
@@ -708,6 +834,276 @@ export class ActionExecutor {
   }
 
   // ===== Utilities =====
+
+  private _isLikelyLink(diag: ClickElementDiag | null): boolean {
+    if (!diag) return false;
+
+    const tag = (diag.tag || "").toLowerCase();
+    const role = (diag.role || "").toLowerCase();
+    return (
+      tag === "a" ||
+      role === "link" ||
+      !!diag.href ||
+      !!diag.closestHref ||
+      !!diag.descendantHref
+    );
+  }
+
+  private async _captureClickObservation(target: Locator): Promise<ClickObservation> {
+    const pageUrl = this.page.url();
+
+    const pageState = await this.page.evaluate(() => {
+      const active = document.activeElement as HTMLElement | null;
+      const activeTag = active?.tagName?.toLowerCase() || "";
+      const activeId = active?.id || "";
+      const activeRole = active?.getAttribute?.("role") || "";
+      const activeRef = active?.getAttribute?.("aria-ref") || "";
+      const activeSig = `${activeTag}#${activeId}[role=${activeRole}][ref=${activeRef}]`;
+
+      const count = (selector: string) => document.querySelectorAll(selector).length;
+
+      return {
+        activeElement: activeSig,
+        dialogCount: count("[role='dialog'], [aria-modal='true']"),
+        listboxCount: count("[role='listbox']"),
+        menuCount: count("[role='menu'], [role='menuitem'], [role='menuitemradio']"),
+        expandedCount: count("[aria-expanded='true']"),
+      };
+    });
+
+    let targetPresent = false;
+    let targetState: ClickTargetState | null = null;
+
+    try {
+      const count = await target.count();
+      targetPresent = count > 0;
+      if (targetPresent) {
+        targetState = await target.evaluate((node: Element) => {
+          const el = node as HTMLElement;
+          const inputLike = node as HTMLInputElement;
+          return {
+            role: node.getAttribute("role") || "",
+            ariaExpanded: node.getAttribute("aria-expanded"),
+            ariaSelected: node.getAttribute("aria-selected"),
+            ariaPressed: node.getAttribute("aria-pressed"),
+            value: inputLike.value || "",
+            checked: typeof inputLike.checked === "boolean" ? inputLike.checked : null,
+            text: (el.innerText || node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 200),
+            className: (el.className || "").toString().slice(0, 200),
+          };
+        });
+      }
+    } catch {
+      targetPresent = false;
+      targetState = null;
+    }
+
+    return {
+      pageUrl,
+      activeElement: pageState.activeElement,
+      targetPresent,
+      targetState,
+      dialogCount: pageState.dialogCount,
+      listboxCount: pageState.listboxCount,
+      menuCount: pageState.menuCount,
+      expandedCount: pageState.expandedCount,
+    };
+  }
+
+  private _didClickObservationChange(before: ClickObservation, after: ClickObservation): boolean {
+    if (before.pageUrl !== after.pageUrl) return true;
+    if (before.activeElement !== after.activeElement) return true;
+    if (before.targetPresent !== after.targetPresent) return true;
+
+    if (before.dialogCount !== after.dialogCount) return true;
+    if (before.listboxCount !== after.listboxCount) return true;
+    if (before.menuCount !== after.menuCount) return true;
+    if (before.expandedCount !== after.expandedCount) return true;
+
+    return JSON.stringify(before.targetState) !== JSON.stringify(after.targetState);
+  }
+
+  private _normalizeSelectToken(value: string | null | undefined): string {
+    return (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+  }
+
+  private _buildSelectVariants(value: string): string[] {
+    const raw = value.trim();
+    if (!raw) return [];
+
+    const variants = new Set<string>([raw]);
+    const number = raw.match(/\d+/)?.[0];
+    if (number) {
+      variants.add(number);
+      variants.add(`${number} people`);
+      variants.add(`${number} person`);
+      variants.add(`${number} guests`);
+      variants.add(`for ${number}`);
+    }
+    return Array.from(variants);
+  }
+
+  private _matchesVariant(text: string, variant: string): boolean {
+    if (!text || !variant) return false;
+    if (text === variant) return true;
+
+    if (/^\d+$/.test(variant)) {
+      const re = new RegExp(`(^|\\D)${escapeRegex(variant)}(\\D|$)`);
+      return re.test(text);
+    }
+    return text.includes(variant);
+  }
+
+  private _stateMatchesExpected(state: SelectState | null, variants: string[]): boolean {
+    if (!state || variants.length === 0) return false;
+
+    const normalizedVariants = variants
+      .map((v) => this._normalizeSelectToken(v))
+      .filter((v) => !!v);
+    const fields = [
+      state.value,
+      state.selectedText,
+      state.text,
+      state.ariaLabel,
+      state.ariaValueText,
+    ].map((f) => this._normalizeSelectToken(f));
+
+    return fields.some((field) => normalizedVariants.some((variant) => this._matchesVariant(field, variant)));
+  }
+
+  private _stateChanged(before: SelectState | null, after: SelectState | null): boolean {
+    if (!before || !after) return false;
+
+    return (
+      this._normalizeSelectToken(before.value) !== this._normalizeSelectToken(after.value) ||
+      this._normalizeSelectToken(before.selectedText) !== this._normalizeSelectToken(after.selectedText) ||
+      this._normalizeSelectToken(before.text) !== this._normalizeSelectToken(after.text) ||
+      this._normalizeSelectToken(before.ariaValueText) !== this._normalizeSelectToken(after.ariaValueText)
+    );
+  }
+
+  private async _readSelectState(control: Locator): Promise<SelectState | null> {
+    try {
+      return await control.evaluate((node: Element) => {
+        const el = node as HTMLElement;
+        const tagName = (node.tagName || "").toLowerCase();
+        const role = node.getAttribute("role") || "";
+        const value = (node as HTMLInputElement).value || "";
+        const selectedText = tagName === "select"
+          ? Array.from(((node as HTMLSelectElement).selectedOptions || []))
+            .map((opt) => (opt.textContent || "").trim())
+            .filter((txt) => !!txt)
+            .join(" ")
+          : "";
+        const text = (el.innerText || node.textContent || "").replace(/\s+/g, " ").trim();
+        const ariaLabel = node.getAttribute("aria-label") || "";
+        const ariaValueText = node.getAttribute("aria-valuetext") || "";
+
+        return {
+          tagName,
+          role,
+          value,
+          selectedText,
+          text,
+          ariaLabel,
+          ariaValueText,
+        };
+      });
+    } catch {
+      return null;
+    }
+  }
+
+  private async _clickFirstVisible(
+    locator: Locator,
+    label: string,
+    debugLog: Array<Record<string, unknown>>,
+  ): Promise<boolean> {
+    let count = 0;
+    try {
+      count = await locator.count();
+    } catch (e) {
+      debugLog.push({ label, count: 0, error: String(e) });
+      return false;
+    }
+
+    const inspectCount = Math.min(count, 8);
+    for (let i = 0; i < inspectCount; i++) {
+      const candidate = locator.nth(i);
+      const visible = await candidate.isVisible().catch(() => false);
+      if (!visible) continue;
+
+      const enabled = await candidate.isEnabled().catch(() => true);
+      if (!enabled) continue;
+
+      try {
+        await candidate.click({ timeout: this.shortTimeout });
+        debugLog.push({ label, index: i, clicked: true });
+        await this.page.waitForTimeout(100);
+        return true;
+      } catch (e) {
+        debugLog.push({ label, index: i, clicked: false, error: String(e) });
+      }
+    }
+
+    return false;
+  }
+
+  private async _selectFromCustomControl(
+    control: Locator,
+    variants: string[],
+    details: Record<string, unknown>,
+  ): Promise<boolean> {
+    const debugLog: Array<Record<string, unknown>> = [];
+    details.custom_attempts = debugLog;
+
+    try {
+      await control.click({ timeout: this.defaultTimeout });
+      debugLog.push({ step: "open_control", success: true });
+      await this.page.waitForTimeout(120);
+    } catch (e) {
+      debugLog.push({ step: "open_control", success: false, error: String(e) });
+      return false;
+    }
+
+    for (const variant of variants) {
+      const escapedVariant = variant.replace(/["\\]/g, "\\$&");
+      const fuzzyName = new RegExp(`\\b${escapeRegex(variant)}\\b`, "i");
+
+      const attempts: Array<{ label: string; locator: Locator }> = [
+        { label: `role=option exact "${variant}"`, locator: this.page.getByRole("option", { name: variant, exact: true }) },
+        { label: `role=option fuzzy "${variant}"`, locator: this.page.getByRole("option", { name: fuzzyName }) },
+        { label: `role=menuitemradio exact "${variant}"`, locator: this.page.getByRole("menuitemradio", { name: variant, exact: true }) },
+        { label: `role=menuitemradio fuzzy "${variant}"`, locator: this.page.getByRole("menuitemradio", { name: fuzzyName }) },
+        { label: `role=menuitem exact "${variant}"`, locator: this.page.getByRole("menuitem", { name: variant, exact: true }) },
+        { label: `role=menuitem fuzzy "${variant}"`, locator: this.page.getByRole("menuitem", { name: fuzzyName }) },
+        { label: `role=button exact "${variant}"`, locator: this.page.getByRole("button", { name: variant, exact: true }) },
+        { label: `role=button fuzzy "${variant}"`, locator: this.page.getByRole("button", { name: fuzzyName }) },
+        { label: `data-value="${variant}"`, locator: this.page.locator(`[data-value="${escapedVariant}"]`) },
+        { label: `aria-label="${variant}"`, locator: this.page.locator(`[aria-label="${escapedVariant}"]`) },
+        { label: `text exact "${variant}"`, locator: this.page.getByText(variant, { exact: true }) },
+        { label: `text fuzzy "${variant}"`, locator: this.page.getByText(fuzzyName) },
+      ];
+
+      for (const attempt of attempts) {
+        const clicked = await this._clickFirstVisible(attempt.locator, attempt.label, debugLog);
+        if (clicked) return true;
+      }
+    }
+
+    // Last-resort keyboard interaction for focused combobox-like controls
+    try {
+      await control.focus();
+      await control.press("ArrowDown", { timeout: this.shortTimeout });
+      await this.page.waitForTimeout(80);
+      await control.press("Enter", { timeout: this.shortTimeout });
+      debugLog.push({ step: "keyboard_fallback", success: true });
+      return true;
+    } catch (e) {
+      debugLog.push({ step: "keyboard_fallback", success: false, error: String(e) });
+      return false;
+    }
+  }
 
   private _validCoordinates(xCoord: number, yCoord: number): boolean {
     const viewport = this.page.viewportSize();
