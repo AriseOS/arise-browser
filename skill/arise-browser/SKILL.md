@@ -1,37 +1,37 @@
 ---
-name: amipilot
+name: arise-browser
 description: >
-  Control a headless or headed Chromium browser via AmiPilot's HTTP API. Use for web automation,
-  scraping, form filling, navigation, and multi-tab workflows. AmiPilot exposes a YAML accessibility
+  Control a headless or headed Chromium browser via AriseBrowser's HTTP API. Use for web automation,
+  scraping, form filling, navigation, and multi-tab workflows. AriseBrowser exposes a YAML accessibility
   tree with persistent refs (WeakMap + aria-ref + signature), multi-strategy click fallbacks, and
   behavior recording with Learn protocol export — built for AI agents that need reliable browser control.
   Use when the task involves: browsing websites, filling forms, clicking buttons, extracting
   page text, taking screenshots, recording workflows, or any browser-based automation.
-homepage: https://github.com/AmiProject/amipilot
+homepage: https://github.com/AriseOS/arise-browser
 metadata:
   openclaw:
     emoji: "🚀"
     requires:
       bins: ["npx"]
       env: |
-        AMIPILOT_TOKEN (optional, secret) - Bearer auth token
-        AMIPILOT_PORT (optional) - HTTP port, default 9867
-        AMIPILOT_HEADLESS (optional) - true/false, default true
-        AMIPILOT_PROFILE (optional) - Chromium profile directory
-        AMIPILOT_BIND (optional) - Bind address, default 127.0.0.1
+        ARISE_BROWSER_TOKEN (optional, secret) - Bearer auth token
+        ARISE_BROWSER_PORT (optional) - HTTP port, default 9867
+        ARISE_BROWSER_HEADLESS (optional) - true/false, default true
+        ARISE_BROWSER_PROFILE (optional) - Chromium profile directory
+        ARISE_BROWSER_BIND (optional) - Bind address, default 127.0.0.1
 ---
 
-# AmiPilot
+# AriseBrowser
 
 Industrial-grade browser automation for AI agents. Persistent refs, multi-strategy clicks, behavior recording.
 
-**Security Note:** AmiPilot runs entirely locally. It does not contact external services or send telemetry. It controls a real Chromium instance — if pointed at a profile with saved logins, agents can access authenticated sites. Always use a dedicated empty profile and set AMIPILOT_TOKEN when exposing the API. See [TRUST.md](TRUST.md) for the full security model.
+**Security Note:** AriseBrowser runs entirely locally. It does not contact external services or send telemetry. It controls a real Chromium instance — if pointed at a profile with saved logins, agents can access authenticated sites. Always use a dedicated empty profile and set ARISE_BROWSER_TOKEN when exposing the API. See [TRUST.md](TRUST.md) for the full security model.
 
 ## Quick Start (Agent Workflow)
 
 ```bash
-# 1. Start AmiPilot (local on :9867)
-npx amipilot &
+# 1. Start AriseBrowser (local on :9867)
+npx arise-browser &
 
 # 2. In your agent, follow this loop:
 #    a) Navigate to a URL
@@ -41,15 +41,15 @@ npx amipilot &
 #    e) Repeat until done
 ```
 
-**Refs are persistent** — AmiPilot's 3-layer ref system (WeakMap → aria-ref → signature) means refs survive across snapshots. You don't need to re-snapshot before every action.
+**Refs are persistent** — AriseBrowser's 3-layer ref system (WeakMap → aria-ref → signature) means refs survive across snapshots. You don't need to re-snapshot before every action.
 
 ### Recommended Secure Setup
 
 ```bash
-AMIPILOT_BIND=127.0.0.1 \
-AMIPILOT_TOKEN="your-strong-secret" \
-AMIPILOT_PROFILE=~/.amipilot/automation-profile \
-npx amipilot &
+ARISE_BROWSER_BIND=127.0.0.1 \
+ARISE_BROWSER_TOKEN="your-strong-secret" \
+ARISE_BROWSER_PROFILE=~/.arise-browser/automation-profile \
+npx arise-browser &
 ```
 
 **Never expose to 0.0.0.0 without a token. Never point at your daily browser profile.**
@@ -58,25 +58,25 @@ npx amipilot &
 
 ```bash
 # Headless (default)
-npx amipilot &
+npx arise-browser &
 
 # Headed — visible browser for debugging
-npx amipilot --no-headless &
+npx arise-browser --no-headless &
 
 # With auth token
-AMIPILOT_TOKEN="your-secret-token" npx amipilot &
+ARISE_BROWSER_TOKEN="your-secret-token" npx arise-browser &
 
 # Custom port
-npx amipilot --port 8080 &
+npx arise-browser --port 8080 &
 
 # Connect to existing browser via CDP
-npx amipilot --cdp http://localhost:9222 &
+npx arise-browser --cdp http://localhost:9222 &
 
 # Persistent profile
-npx amipilot --profile ~/.amipilot/my-profile &
+npx arise-browser --profile ~/.arise-browser/my-profile &
 ```
 
-Default: **port 9867**, no auth required (local). Set `AMIPILOT_TOKEN` for remote access.
+Default: **port 9867**, no auth required (local). Set `ARISE_BROWSER_TOKEN` for remote access.
 
 ## Core Workflow
 
@@ -176,9 +176,9 @@ curl -X POST http://localhost:9867/recording/export \
 | `/recording/status` | GET | Recording status |
 | `/recording/export` | POST | Export Learn format |
 
-## Why AmiPilot over Pinchtab?
+## Why AriseBrowser over Pinchtab?
 
-| Feature | AmiPilot | Pinchtab |
+| Feature | AriseBrowser | Pinchtab |
 |---------|----------|----------|
 | Persistent Refs | 3-layer (WeakMap + aria-ref + signature) | Single pass |
 | Click Strategy | Ctrl+Click → Force Click fallback | Single attempt |
@@ -196,7 +196,7 @@ curl -X POST http://localhost:9867/recording/export \
 
 ## Pinchtab Compatibility
 
-AmiPilot accepts Pinchtab's `kind` field in `/action`:
+AriseBrowser accepts Pinchtab's `kind` field in `/action`:
 - `kind: "click"` → click
 - `kind: "type"` / `kind: "fill"` → type
 - `kind: "press"` → press_key
@@ -205,4 +205,4 @@ AmiPilot accepts Pinchtab's `kind` field in `/action`:
 - `kind: "select"` → select
 - `kind: "focus"` → focus
 
-Environment variables `BRIDGE_*` are also accepted as aliases for `AMIPILOT_*`.
+Environment variables `BRIDGE_*` are also accepted as aliases for `ARISE_BROWSER_*`.

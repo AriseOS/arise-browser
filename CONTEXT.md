@@ -1,4 +1,4 @@
-# AmiPilot
+# AriseBrowser
 
 AI browser automation engine extracted from ami-desktop's browser control layer.
 
@@ -6,7 +6,7 @@ AI browser automation engine extracted from ami-desktop's browser control layer.
 
 - **Core library** (`src/browser/`): BrowserSession, ActionExecutor, PageSnapshot, BehaviorRecorder
 - **HTTP server** (`src/server/`): Fastify-based REST API, Pinchtab-compatible endpoints
-- **CLI** (`bin/amipilot.ts`): `npx amipilot` entry point
+- **CLI** (`bin/arise-browser.ts`): `npx arise-browser` entry point
 - **OpenClaw** (`skill/`, `plugin/`): Skill definition + plugin manifest
 
 ## Connection Modes
@@ -52,7 +52,7 @@ Health, tabs, navigate, snapshot, action, actions, text, screenshot, pdf, evalua
 ## Pinchtab Compatibility
 
 - Accepts `kind` field (mapped to `type`)
-- Accepts `BRIDGE_*` env vars as aliases for `AMIPILOT_*`
+- Accepts `BRIDGE_*` env vars as aliases for `ARISE_BROWSER_*`
 - Same default port (9867)
 - JSON snapshot format compatible
 

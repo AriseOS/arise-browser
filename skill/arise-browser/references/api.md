@@ -1,4 +1,4 @@
-# AmiPilot API Reference
+# AriseBrowser API Reference
 
 Base URL: `http://localhost:9867`
 
@@ -52,7 +52,7 @@ Response (json):
 ### POST /action
 Execute a single browser action.
 
-Body (AmiPilot native):
+Body (AriseBrowser native):
 ```json
 {"type": "click", "ref": "e5"}
 ```

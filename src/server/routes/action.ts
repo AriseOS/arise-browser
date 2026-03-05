@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { BrowserSession } from "../../browser/browser-session.js";
 import type { ActionDict } from "../../types/index.js";
 
-// Pinchtab kind -> AmiPilot type mapping
+// Pinchtab kind -> AriseBrowser type mapping
 const KIND_MAP: Record<string, string> = {
   click: "click",
   type: "type",

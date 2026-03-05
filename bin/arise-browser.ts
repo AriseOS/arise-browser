@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 
 /**
- * AmiPilot CLI — Start the HTTP server.
+ * AriseBrowser CLI — Start the HTTP server.
  *
  * Usage:
- *   npx amipilot [options]
+ *   npx arise-browser [options]
  *
  * Options:
  *   --port, -p       Server port (default: 9867)
@@ -17,15 +17,15 @@
  *   --help           Show help
  *
  * Environment variables (Pinchtab-compatible):
- *   AMIPILOT_PORT / BRIDGE_PORT
- *   AMIPILOT_BIND / BRIDGE_BIND
- *   AMIPILOT_TOKEN / BRIDGE_TOKEN
- *   AMIPILOT_HEADLESS
- *   AMIPILOT_PROFILE
+ *   ARISE_BROWSER_PORT / BRIDGE_PORT
+ *   ARISE_BROWSER_BIND / BRIDGE_BIND
+ *   ARISE_BROWSER_TOKEN / BRIDGE_TOKEN
+ *   ARISE_BROWSER_HEADLESS
+ *   ARISE_BROWSER_PROFILE
  */
 
 import { createServer } from "../src/server/server.js";
-import type { AmiPilotConfig } from "../src/types/index.js";
+import type { AriseBrowserConfig } from "../src/types/index.js";
 
 const args = process.argv.slice(2);
 
@@ -45,9 +45,9 @@ function hasFlag(names: string[]): boolean {
 
 if (hasFlag(["--help", "-h"])) {
   console.log(`
-AmiPilot — AI browser automation engine
+AriseBrowser — AI browser automation engine
 
-Usage: amipilot [options]
+Usage: arise-browser [options]
 
 Options:
   --port, -p <port>    Server port (default: 9867)
@@ -60,18 +60,18 @@ Options:
   --help               Show this help
 
 Environment variables:
-  AMIPILOT_PORT / BRIDGE_PORT     Default: 9867
-  AMIPILOT_BIND / BRIDGE_BIND     Default: 127.0.0.1
-  AMIPILOT_TOKEN / BRIDGE_TOKEN   Auth token
-  AMIPILOT_HEADLESS               "true" or "false"
-  AMIPILOT_PROFILE                Profile dir (managed mode)
+  ARISE_BROWSER_PORT / BRIDGE_PORT     Default: 9867
+  ARISE_BROWSER_BIND / BRIDGE_BIND     Default: 127.0.0.1
+  ARISE_BROWSER_TOKEN / BRIDGE_TOKEN   Auth token
+  ARISE_BROWSER_HEADLESS               "true" or "false"
+  ARISE_BROWSER_PROFILE                Profile dir (managed mode)
 `);
   process.exit(0);
 }
 
 const port = parseInt(
   getArg(["--port", "-p"])
-    || process.env.AMIPILOT_PORT
+    || process.env.ARISE_BROWSER_PORT
     || process.env.BRIDGE_PORT
     || "9867",
   10,
@@ -83,36 +83,36 @@ if (Number.isNaN(port) || port < 0 || port > 65535) {
 
 const host =
   getArg(["--host"])
-    || process.env.AMIPILOT_BIND
+    || process.env.ARISE_BROWSER_BIND
     || process.env.BRIDGE_BIND
     || "127.0.0.1";
 
 const token =
   getArg(["--token"])
-    || process.env.AMIPILOT_TOKEN
+    || process.env.ARISE_BROWSER_TOKEN
     || process.env.BRIDGE_TOKEN;
 
 const cdpUrl = getArg(["--cdp"]);
 const profileDir =
   getArg(["--profile"])
-    || process.env.AMIPILOT_PROFILE;
+    || process.env.ARISE_BROWSER_PROFILE;
 
 let headless = true;
 if (hasFlag(["--no-headless"])) {
   headless = false;
-} else if (process.env.AMIPILOT_HEADLESS === "false") {
+} else if (process.env.ARISE_BROWSER_HEADLESS === "false") {
   headless = false;
 }
 
 // Determine mode
-let mode: AmiPilotConfig["mode"] = "standalone";
+let mode: AriseBrowserConfig["mode"] = "standalone";
 if (cdpUrl) {
   mode = "cdp";
 } else if (profileDir) {
   mode = "managed";
 }
 
-const browserConfig: AmiPilotConfig = {
+const browserConfig: AriseBrowserConfig = {
   mode,
   cdpUrl,
   headless,
@@ -121,7 +121,7 @@ const browserConfig: AmiPilotConfig = {
 };
 
 async function main() {
-  console.log(`AmiPilot v0.1.0`);
+  console.log(`AriseBrowser v0.1.0`);
   console.log(`Mode: ${mode} | Headless: ${headless} | Port: ${port}`);
 
   const server = await createServer(browserConfig, { port, host, token });
@@ -132,7 +132,7 @@ async function main() {
   if (token) {
     console.log(`Auth: Bearer token required`);
   } else {
-    console.log(`Auth: disabled (set AMIPILOT_TOKEN to enable)`);
+    console.log(`Auth: disabled (set ARISE_BROWSER_TOKEN to enable)`);
   }
 
   // Graceful shutdown with forced exit timeout

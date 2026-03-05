@@ -1,10 +1,10 @@
 {
-  "name": "amipilot",
+  "name": "arise-browser",
   "version": "0.1.0",
   "description": "AI browser automation — persistent refs, multi-strategy clicks, behavior recording",
   "tools": [
     {
-      "name": "amipilot",
+      "name": "arise-browser",
       "description": "Control a Chromium browser for web automation. Actions: navigate, snapshot, click, type, scroll, hover, select, focus, press_key, screenshot, text, tabs, recording.",
       "inputSchema": {
         "type": "object",
@@ -123,7 +123,7 @@
     }
   },
   "lifecycle": {
-    "start": "npx amipilot --port {{port}} --host {{host}}",
+    "start": "npx arise-browser --port {{port}} --host {{host}}",
     "health": "http://{{host}}:{{port}}/health",
     "stop": "SIGTERM"
   }

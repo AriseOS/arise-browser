@@ -1,5 +1,5 @@
 /**
- * AmiPilot — AI browser automation engine.
+ * AriseBrowser — AI browser automation engine.
  *
  * Public API surface.
  */

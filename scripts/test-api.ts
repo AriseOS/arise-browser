@@ -1,9 +1,9 @@
 #!/usr/bin/env -S node --import=tsx
 /**
- * AmiPilot API test script (TypeScript).
+ * AriseBrowser API test script (TypeScript).
  *
  * Usage:
- *   1. Start server: node dist/bin/amipilot.js --no-headless --port 9867
+ *   1. Start server: node dist/bin/arise-browser.js --no-headless --port 9867
  *   2. Run: npx tsx scripts/test-api.ts [base_url]
  */
 
@@ -29,7 +29,7 @@ function assert(condition: boolean, msg: string) {
 }
 
 async function main() {
-  console.log("=== AmiPilot API Tests (TypeScript) ===");
+  console.log("=== AriseBrowser API Tests (TypeScript) ===");
   console.log(`Base URL: ${BASE}\n`);
 
   // 1. Health

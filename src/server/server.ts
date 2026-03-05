@@ -1,11 +1,11 @@
 /**
- * AmiPilot HTTP server — Fastify-based, Pinchtab-compatible API.
+ * AriseBrowser HTTP server — Fastify-based, Pinchtab-compatible API.
  */
 
 import Fastify, { type FastifyInstance } from "fastify";
 import { BrowserSession } from "../browser/browser-session.js";
 import { createLogger } from "../logger.js";
-import type { AmiPilotConfig, ServerConfig } from "../types/index.js";
+import type { AriseBrowserConfig, ServerConfig } from "../types/index.js";
 import { registerHealthRoute } from "./routes/health.js";
 import { registerTabsRoute } from "./routes/tabs.js";
 import { registerNavigateRoute } from "./routes/navigate.js";
@@ -27,20 +27,20 @@ import { authMiddleware } from "./middleware/auth.js";
 const logger = createLogger("server");
 
 export async function createServer(
-  browserConfig: AmiPilotConfig,
+  browserConfig: AriseBrowserConfig,
   serverConfig: ServerConfig = {},
 ): Promise<FastifyInstance> {
   const app = Fastify({ logger: false });
 
   // Auth middleware
   const token = serverConfig.token
-    || process.env.AMIPILOT_TOKEN
+    || process.env.ARISE_BROWSER_TOKEN
     || process.env.BRIDGE_TOKEN;
 
   if (token) {
     app.addHook("onRequest", authMiddleware(token));
   } else {
-    logger.warn("No auth token configured — all endpoints are unauthenticated. Set AMIPILOT_TOKEN to enable auth.");
+    logger.warn("No auth token configured — all endpoints are unauthenticated. Set ARISE_BROWSER_TOKEN to enable auth.");
   }
 
   // Create and attach browser session

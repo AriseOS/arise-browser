@@ -1,4 +1,4 @@
-# AmiPilot
+# AriseBrowser
 
 AI browser automation engine — persistent refs, multi-strategy actions, behavior recording.
 
@@ -21,13 +21,13 @@ npm install
 npm run build
 
 # Run server (headless, port 9867)
-npx amipilot
+npx arise-browser
 
 # Run with visible browser
-npx amipilot --no-headless
+npx arise-browser --no-headless
 
 # Custom port + auth
-AMIPILOT_TOKEN=secret npx amipilot --port 8080
+ARISE_BROWSER_TOKEN=secret npx arise-browser --port 8080
 ```
 
 ## API Endpoints
@@ -54,7 +54,7 @@ AMIPILOT_TOKEN=secret npx amipilot --port 8080
 ## Library Usage
 
 ```typescript
-import { BrowserSession, createServer } from "amipilot";
+import { BrowserSession, createServer } from "arise-browser";
 
 // As a library
 const session = BrowserSession.create({ mode: "standalone", headless: true });

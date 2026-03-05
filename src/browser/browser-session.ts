@@ -18,7 +18,7 @@ import { BrowserConfig, getUserAgent, getStealthHeaders } from "./config.js";
 import { PageSnapshot } from "./page-snapshot.js";
 import { ActionExecutor } from "./action-executor.js";
 import { createLogger } from "../logger.js";
-import type { AmiPilotConfig, ActionResult, TabInfo, SessionRef } from "../types/index.js";
+import type { AriseBrowserConfig, ActionResult, TabInfo, SessionRef } from "../types/index.js";
 
 const logger = createLogger("browser-session");
 
@@ -71,9 +71,9 @@ export class BrowserSession implements SessionRef {
 
   // Config
   private _sessionId: string;
-  private _config: AmiPilotConfig;
+  private _config: AriseBrowserConfig;
 
-  private constructor(sessionId: string, config: AmiPilotConfig) {
+  private constructor(sessionId: string, config: AriseBrowserConfig) {
     this._sessionId = sessionId;
     this._config = config;
   }
@@ -106,7 +106,7 @@ export class BrowserSession implements SessionRef {
 
   // ===== Factory / Singleton =====
 
-  static create(config: AmiPilotConfig, sessionId = "default"): BrowserSession {
+  static create(config: AriseBrowserConfig, sessionId = "default"): BrowserSession {
     const existing = BrowserSession._instances.get(sessionId);
     if (existing) {
       logger.warn({ sessionId }, "Session already exists — returning existing instance (new config ignored)");

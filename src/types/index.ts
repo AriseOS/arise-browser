@@ -1,8 +1,8 @@
 /**
- * AmiPilot public type definitions.
+ * AriseBrowser public type definitions.
  */
 
-export interface AmiPilotConfig {
+export interface AriseBrowserConfig {
   /** Connection mode:
    * - 'standalone': Launch new Chromium (default)
    * - 'cdp': Connect to existing browser via CDP

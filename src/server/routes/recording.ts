@@ -164,7 +164,7 @@ export function registerRecordingRoutes(app: FastifyInstance) {
       type: "browser_workflow",
       task: task || "untitled recording",
       success: true,
-      source: "amipilot",
+      source: "arise-browser",
       domain: [...domains][0] || "",
       steps,
       metadata: {

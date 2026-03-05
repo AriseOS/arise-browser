@@ -1,12 +1,12 @@
 {
-  "name": "amipilot",
+  "name": "arise-browser",
   "version": "0.1.0",
   "description": "AI browser automation engine — persistent refs, multi-strategy actions, behavior recording",
   "type": "module",
   "main": "./dist/src/index.js",
   "types": "./dist/src/index.d.ts",
   "bin": {
-    "amipilot": "./dist/bin/amipilot.js"
+    "arise-browser": "./dist/bin/arise-browser.js"
   },
   "exports": {
     ".": {
@@ -17,7 +17,8 @@
   "scripts": {
     "build": "tsc && node -e \"const fs=require('fs');fs.cpSync('src/browser/scripts','dist/src/browser/scripts',{recursive:true})\"",
     "dev": "tsc --watch",
-    "start": "node dist/bin/amipilot.js",
+    "start": "node dist/bin/arise-browser.js",
+    "test:api": "npx tsx scripts/test-api.ts",
     "clean": "rm -rf dist"
   },
   "files": [

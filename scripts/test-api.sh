@@ -1,9 +1,9 @@
 #!/bin/bash
 #
-# AmiPilot API smoke tests using curl.
+# AriseBrowser API smoke tests using curl.
 #
 # Usage:
-#   1. Start server: node dist/bin/amipilot.js --no-headless --port 9867
+#   1. Start server: node dist/bin/arise-browser.js --no-headless --port 9867
 #   2. Run tests:    bash scripts/test-api.sh [base_url]
 #
 
@@ -27,7 +27,7 @@ check() {
   fi
 }
 
-echo "=== AmiPilot API Tests ==="
+echo "=== AriseBrowser API Tests ==="
 echo "Base URL: $BASE"
 echo ""
 

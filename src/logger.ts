@@ -25,7 +25,7 @@ export function setLogger(logger: Logger): void {
 function getOrCreateRoot(): Logger {
   if (_rootLogger) return _rootLogger;
 
-  const isDebug = !!(process.env.AMIPILOT_DEBUG || process.env.LOG_LEVEL === "debug");
+  const isDebug = !!(process.env.ARISE_BROWSER_DEBUG || process.env.LOG_LEVEL === "debug");
   const isProd = process.env.NODE_ENV === "production";
 
   const opts: Record<string, unknown> = {
