@@ -26,6 +26,10 @@
 
 import { createServer } from "../src/server/server.js";
 import type { AriseBrowserConfig } from "../src/types/index.js";
+import { createRequire } from "node:module";
+
+const require = createRequire(import.meta.url);
+const { version: PKG_VERSION } = require("../package.json");
 
 const args = process.argv.slice(2);
 
@@ -121,7 +125,7 @@ const browserConfig: AriseBrowserConfig = {
 };
 
 async function main() {
-  console.log(`AriseBrowser v0.1.0`);
+  console.log(`AriseBrowser v${PKG_VERSION}`);
   console.log(`Mode: ${mode} | Headless: ${headless} | Port: ${port}`);
 
   const server = await createServer(browserConfig, { port, host, token });
