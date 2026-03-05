@@ -35,7 +35,7 @@
     "mcp",
     "openclaw"
   ],
-  "license": "MIT",
+  "license": "Apache-2.0",
   "dependencies": {
     "fastify": "^5.0.0",
     "pino": "^9.5.0",

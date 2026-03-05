@@ -162,4 +162,4 @@ Pinchtab `BRIDGE_*` env vars are accepted for drop-in compatibility.
 
 ## License
 
-MIT
+Apache 2.0
