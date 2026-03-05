@@ -9,6 +9,39 @@ interface SnapshotQuery {
   filter?: "interactive" | "all";
 }
 
+const INTERACTIVE_ROLES = new Set([
+  "link",
+  "button",
+  "textbox",
+  "checkbox",
+  "radio",
+  "combobox",
+  "menuitem",
+  "tab",
+  "switch",
+  "slider",
+  "spinbutton",
+  "searchbox",
+  "option",
+  "menuitemcheckbox",
+  "menuitemradio",
+  "treeitem",
+]);
+
+function extractRoleFromCompactLine(line: string): string | null {
+  const trimmed = line.trim();
+
+  // Current unified analyzer format: "- role \"name\" ... [ref=e123]"
+  const bulletMatch = trimmed.match(/^-\s+([a-z][a-z0-9_-]*)\b/i);
+  if (bulletMatch) return bulletMatch[1].toLowerCase();
+
+  // Legacy compact format compatibility: "[ref=e123] role ..."
+  const legacyMatch = trimmed.match(/^\[ref=[^\]]+\]\s*([a-z][a-z0-9_-]*)\b/i);
+  if (legacyMatch) return legacyMatch[1].toLowerCase();
+
+  return null;
+}
+
 export function registerSnapshotRoute(app: FastifyInstance) {
   app.get("/snapshot", async (request: FastifyRequest<{ Querystring: SnapshotQuery }>, reply) => {
     const session = (app as any).session as BrowserSession;
@@ -24,13 +57,6 @@ export function registerSnapshotRoute(app: FastifyInstance) {
         const elements = result.elements as Record<string, unknown>;
 
         // Convert to Pinchtab JSON format
-        const INTERACTIVE_ROLES = new Set([
-          "link", "button", "textbox", "checkbox", "radio",
-          "combobox", "menuitem", "tab", "switch", "slider",
-          "spinbutton", "searchbox", "option", "menuitemcheckbox",
-          "menuitemradio", "treeitem",
-        ]);
-
         const nodes: Record<string, unknown>[] = [];
         let count = 0;
         if (elements && typeof elements === "object") {
@@ -70,10 +96,8 @@ export function registerSnapshotRoute(app: FastifyInstance) {
           .map((l) => l.trim());
         if (interactiveOnly) {
           lines = lines.filter((l) => {
-            const m = l.match(/^\[ref=\w+\]\s*(\w+)/);
-            return m && ["link", "button", "textbox", "checkbox", "radio",
-              "combobox", "menuitem", "tab", "switch", "slider",
-              "spinbutton", "searchbox", "option"].includes(m[1]);
+            const role = extractRoleFromCompactLine(l);
+            return role ? INTERACTIVE_ROLES.has(role) : false;
           });
         }
         return reply.type("text/plain").send(lines.join("\n"));
