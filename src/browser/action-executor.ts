@@ -359,9 +359,10 @@ export class ActionExecutor {
     details.after_observation = afterObservation;
 
     if (!this._didClickObservationChange(beforeObservation, afterObservation)) {
-      details.error = "no_state_change";
+      details.no_state_change = true;
+      details.warning = "no_state_change";
       return {
-        message: `Error: Click had no observable page state change for ${target}`,
+        message: `Clicked element (${details.click_method}): ${target} (no observable page state change)`,
         details,
       };
     }

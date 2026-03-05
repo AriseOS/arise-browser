@@ -16,6 +16,7 @@ const INTERACTIVE_ROLES = new Set([
   "checkbox",
   "radio",
   "combobox",
+  "select",
   "menuitem",
   "tab",
   "switch",
