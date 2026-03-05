@@ -1,6 +1,6 @@
 # AriseBrowser
 
-AI browser automation engine extracted from ami-desktop's browser control layer.
+AI browser automation engine extracted from arise-desktop's browser control layer.
 
 ## Architecture
 
@@ -27,7 +27,7 @@ AI browser automation engine extracted from ami-desktop's browser control layer.
 
 ## Element Data
 
-PageSnapshot caches the `elements` map (ref → {name, role}) from unified_analyzer.js on every `capture()` call. Access via `PageSnapshot.getLastElements()` or `BrowserSession.getLastElements()`. This allows consumers (e.g., ami-desktop) to look up element metadata for clicked/typed refs without regex-parsing snapshot text.
+PageSnapshot caches the `elements` map (ref → {name, role}) from unified_analyzer.js on every `capture()` call. Access via `PageSnapshot.getLastElements()` or `BrowserSession.getLastElements()`. This allows consumers (e.g., arise-desktop) to look up element metadata for clicked/typed refs without regex-parsing snapshot text.
 
 ## Key Files
 

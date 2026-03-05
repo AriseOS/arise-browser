@@ -160,7 +160,7 @@
         } else {
             // Chrome Extension fallback
             window.postMessage({
-                source: 'ami-tracker',
+                source: 'arise-tracker',
                 operation: operation
             }, '*');
         }
