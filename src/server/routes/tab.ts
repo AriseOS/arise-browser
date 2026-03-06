@@ -1,16 +1,18 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { BrowserSession } from "../../browser/browser-session.js";
+import { getTabWriteConflict, sendRouteError, sendTabLocked } from "../route-utils.js";
 
 interface TabBody {
   action: "create" | "close" | "switch";
   tabId?: string;
   url?: string;
+  owner?: string;
 }
 
 export function registerTabRoute(app: FastifyInstance) {
   app.post("/tab", async (request: FastifyRequest<{ Body: TabBody }>, reply) => {
     const session = (app as any).session as BrowserSession;
-    const { action, tabId, url } = request.body || {} as TabBody;
+    const { action, tabId, url, owner } = request.body || {} as TabBody;
 
     if (!action) {
       return reply.code(400).send({ error: "action is required (create, close, switch)" });
@@ -28,6 +30,10 @@ export function registerTabRoute(app: FastifyInstance) {
           if (!tabId) {
             return reply.code(400).send({ error: "tabId is required for close" });
           }
+          const conflict = getTabWriteConflict(session, { tabId, owner });
+          if (conflict) {
+            return sendTabLocked(reply, conflict);
+          }
           const closed = await session.closeTab(tabId);
           return { tabId, action: "closed", success: closed };
         }
@@ -35,6 +41,10 @@ export function registerTabRoute(app: FastifyInstance) {
         case "switch": {
           if (!tabId) {
             return reply.code(400).send({ error: "tabId is required for switch" });
+          }
+          const conflict = getTabWriteConflict(session, { tabId, owner });
+          if (conflict) {
+            return sendTabLocked(reply, conflict);
           }
           const switched = await session.switchToTab(tabId);
           return { tabId, action: "switched", success: switched };
@@ -44,7 +54,7 @@ export function registerTabRoute(app: FastifyInstance) {
           return reply.code(400).send({ error: `Unknown action: ${action}` });
       }
     } catch (e) {
-      return reply.code(500).send({ error: "Tab operation failed" });
+      return sendRouteError(reply, e, "Tab operation failed");
     }
   });
 }

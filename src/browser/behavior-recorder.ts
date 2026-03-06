@@ -457,15 +457,19 @@ export class BehaviorRecorder {
         this._browserSession.snapshot &&
         this._browserSession.currentTabId === tabId
       ) {
-        const snapshotResult = await this._browserSession.snapshot.getFullResult();
-        if (snapshotResult) {
-          this.snapshots[urlHash] = {
-            url,
-            snapshot_text: snapshotResult.snapshotText as string,
-            captured_at: new Date().toISOString(),
-          };
-          logger.info({ url: url.slice(0, 60) }, "Snapshot captured");
-          return;
+        try {
+          const snapshotResult = await this._browserSession.snapshot.getFullResult();
+          if (snapshotResult) {
+            this.snapshots[urlHash] = {
+              url,
+              snapshot_text: snapshotResult.snapshotText as string,
+              captured_at: new Date().toISOString(),
+            };
+            logger.info({ url: url.slice(0, 60) }, "Snapshot captured");
+            return;
+          }
+        } catch (e) {
+          logger.debug({ url, err: e }, "Full snapshot capture failed; falling back to simple snapshot");
         }
       }
 

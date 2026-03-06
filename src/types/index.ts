@@ -25,7 +25,7 @@ export interface AriseBrowserConfig {
   /** Custom user agent */
   userAgent?: string;
 
-  /** Apply stealth headers (default true) */
+  /** Apply safe stealth context options (default true) */
   stealthHeaders?: boolean;
 }
 

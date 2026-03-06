@@ -18,6 +18,16 @@ import type { SnapshotResult } from "../types/index.js";
 
 const logger = createLogger("page-snapshot");
 
+export class SnapshotCaptureError extends Error {
+  constructor(message: string, cause?: unknown) {
+    super(message);
+    this.name = "SnapshotCaptureError";
+    if (cause !== undefined) {
+      (this as Error & { cause?: unknown }).cause = cause;
+    }
+  }
+}
+
 // ===== JS cache (module-level singleton) =====
 
 let _snapshotJsCache: string | null = null;
@@ -111,6 +121,9 @@ export class PageSnapshot {
           );
         }
       } else {
+        if (snapshotResult === null) {
+          throw new SnapshotCaptureError("Snapshot analyzer returned no result");
+        }
         snapshotText = snapshotResult as string;
       }
 
@@ -138,7 +151,10 @@ export class PageSnapshot {
       return output;
     } catch (exc) {
       logger.error({ err: exc }, "Snapshot capture failed");
-      return `Error: Could not capture page snapshot ${exc}`;
+      if (exc instanceof SnapshotCaptureError) {
+        throw exc;
+      }
+      throw new SnapshotCaptureError("Could not capture page snapshot", exc);
     }
   }
 
@@ -158,10 +174,16 @@ export class PageSnapshot {
       if (result && typeof result === "object" && "snapshotText" in result) {
         return result as unknown as Record<string, unknown>;
       }
+      if (result === null) {
+        throw new SnapshotCaptureError("Snapshot analyzer returned no result");
+      }
       return { snapshotText: result, elements: {} };
     } catch (exc) {
       logger.error({ err: exc }, "Full snapshot capture failed");
-      return { snapshotText: `Error: ${exc}`, elements: {} };
+      if (exc instanceof SnapshotCaptureError) {
+        throw exc;
+      }
+      throw new SnapshotCaptureError("Could not capture full snapshot", exc);
     }
   }
 
@@ -199,12 +221,12 @@ export class PageSnapshot {
         }
 
         logger.warn({ err: e }, "Failed to execute snapshot JavaScript");
-        return null;
+        throw new SnapshotCaptureError("Failed to execute snapshot JavaScript", e);
       }
     }
 
     logger.warn("Failed to execute snapshot JavaScript after retries");
-    return null;
+    throw new SnapshotCaptureError("Failed to execute snapshot JavaScript after retries");
   }
 
   private static _formatSnapshot(text: string): string {

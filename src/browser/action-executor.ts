@@ -271,6 +271,7 @@ export class ActionExecutor {
       try {
         const context = this.page.context();
         const t0 = performance.now();
+        const tabsBefore = new Set((await this.session.getTabInfo()).map((t) => t.tab_id));
 
         const newPagePromise = context.waitForEvent("page", {
           timeout: this.shortTimeout,
@@ -287,7 +288,7 @@ export class ActionExecutor {
 
         const tabsAfter = await this.session.getTabInfo();
         const newTabInfo = tabsAfter.find(
-          (t) => !t.is_current && t.url !== "(closed)" && t.url !== "(error)",
+          (t) => !tabsBefore.has(t.tab_id) && t.url !== "(closed)" && t.url !== "(error)",
         );
         const newTabId = newTabInfo?.tab_id;
 

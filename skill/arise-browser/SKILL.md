@@ -153,6 +153,8 @@ curl -X POST http://localhost:9867/recording/export \
   -d '{"recordingId": "session_20260303T180000", "task": "Search for AI products"}'
 ```
 
+Stopped recordings remain exportable for a limited retention window, so `stop -> export` is a supported flow.
+
 ## API Reference
 
 | Endpoint | Method | Description |
@@ -175,6 +177,11 @@ curl -X POST http://localhost:9867/recording/export \
 | `/recording/stop` | POST | Stop recording |
 | `/recording/status` | GET | Recording status |
 | `/recording/export` | POST | Export Learn format |
+
+Notes:
+- Read routes support optional `tabId` where applicable.
+- Write routes targeting a locked tab accept optional `owner`; mismatches return `423 Locked`.
+- `/navigate` accepts optional `tabId` and `timeout` (milliseconds).
 
 ## Why AriseBrowser over Pinchtab?
 

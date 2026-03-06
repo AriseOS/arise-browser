@@ -19,7 +19,7 @@ Navigate to a URL.
 
 Body:
 ```json
-{"url": "https://example.com", "newTab": false}
+{"url": "https://example.com", "newTab": false, "tabId": "tab-001", "timeout": 15000}
 ```
 
 Response:
@@ -33,6 +33,7 @@ Response:
 Get accessibility tree snapshot.
 
 Query params:
+- `tabId`: snapshot a specific tab without switching the global current tab
 - `format`: `yaml` (default), `json`, `compact`, `text`
 - `diff`: `true`/`false` — return only changes since last snapshot
 - `viewportLimit`: `true`/`false` — limit to visible viewport
@@ -54,7 +55,7 @@ Execute a single browser action.
 
 Body (AriseBrowser native):
 ```json
-{"type": "click", "ref": "e5"}
+{"type": "click", "ref": "e5", "tabId": "tab-001", "owner": "agent-1"}
 ```
 
 Body (Pinchtab-compatible):
@@ -69,30 +70,33 @@ Execute multiple actions sequentially.
 
 Body:
 ```json
-{"actions": [{"type": "click", "ref": "e5"}, {"type": "type", "ref": "e12", "text": "hello"}], "stopOnError": true}
+{"actions": [{"type": "click", "ref": "e5", "tabId": "tab-001"}], "owner": "agent-1", "stopOnError": true}
 ```
 
 ## Content
 
 ### GET /text
 Extract page text content.
+Query params: `tabId` (optional)
 
 ### GET /screenshot
 Get JPEG screenshot.
 
 Query params:
+- `tabId`: specific tab (optional)
 - `quality`: 1-100 (default 75)
 - `raw`: `true` returns raw JPEG bytes
 
 ### GET /pdf
 Export page as PDF.
+Query params: `tabId` (optional)
 
 ### POST /evaluate
 Execute JavaScript in page context.
 
 Body:
 ```json
-{"expression": "document.title"}
+{"expression": "document.title", "tabId": "tab-001", "owner": "agent-1"}
 ```
 
 ## Tabs
@@ -112,6 +116,7 @@ Body:
 
 ### POST /tab/lock
 Lock a tab for exclusive use.
+Locked write routes return `423 Locked` unless the same `owner` is supplied.
 
 Body:
 ```json
@@ -165,6 +170,7 @@ Query params:
 
 ### POST /recording/export
 Export recording as Learn protocol format.
+Works for active recordings and recently stopped recordings retained in memory.
 
 Body:
 ```json

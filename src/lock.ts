@@ -16,6 +16,11 @@ export function acquireLock(tabId: string, owner: string, ttlMs = DEFAULT_TTL_MS
 
   const existing = locks.get(tabId);
   if (existing) {
+    if (existing.owner === owner) {
+      existing.expiresAt = Date.now() + ttlMs;
+      locks.set(tabId, existing);
+      return existing;
+    }
     return null; // already locked
   }
 

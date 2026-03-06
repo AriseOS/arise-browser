@@ -96,6 +96,8 @@ export class BrowserSession implements SessionRef {
   private _pages = new Map<string, Page>();
   private _page: Page | null = null;
   private _currentTabId: string | null = null;
+  private _snapshotCache = new WeakMap<Page, PageSnapshot>();
+  private _executorCache = new WeakMap<Page, ActionExecutor>();
 
   // Tab Groups
   private _tabGroups = new Map<string, TabGroup>();
@@ -141,6 +143,91 @@ export class BrowserSession implements SessionRef {
   /** Public getter for pages map (used by BehaviorRecorder). */
   get pages(): ReadonlyMap<string, Page> {
     return this._pages;
+  }
+
+  private _getSnapshotForPage(page: Page): PageSnapshot {
+    let snapshot = this._snapshotCache.get(page);
+    if (!snapshot) {
+      snapshot = new PageSnapshot(page);
+      this._snapshotCache.set(page, snapshot);
+    }
+    return snapshot;
+  }
+
+  private _getExecutorForPage(page: Page): ActionExecutor {
+    let executor = this._executorCache.get(page);
+    if (!executor) {
+      executor = new ActionExecutor(page, this);
+      this._executorCache.set(page, executor);
+    }
+    return executor;
+  }
+
+  private _attachCurrentPage(tabId: string, page: Page): void {
+    this._currentTabId = tabId;
+    this._page = page;
+    this.snapshot = this._getSnapshotForPage(page);
+    this.executor = this._getExecutorForPage(page);
+  }
+
+  private async _resolvePage(
+    tabId?: string,
+    options?: { createIfMissing?: boolean },
+  ): Promise<{ tabId: string | null; page: Page | null }> {
+    await this.ensureBrowser();
+
+    if (tabId) {
+      const page = this._pages.get(tabId);
+      if (!page || page.isClosed()) {
+        throw new Error(`Tab not found: ${tabId}`);
+      }
+      return { tabId, page };
+    }
+
+    if (this._page && !this._page.isClosed()) {
+      return { tabId: this._currentTabId, page: this._page };
+    }
+
+    if (options?.createIfMissing) {
+      const page = await this.getPage();
+      return { tabId: this._currentTabId, page };
+    }
+
+    return { tabId: null, page: null };
+  }
+
+  private _normalizeNavigationTimeout(timeout?: number): number {
+    const parsed = Number(timeout);
+    if (!Number.isFinite(parsed) || parsed <= 0) {
+      return BrowserConfig.navigationTimeout;
+    }
+    return Math.floor(parsed);
+  }
+
+  private _remainingTimeout(deadline: number): number {
+    return Math.max(1, deadline - Date.now());
+  }
+
+  private async _navigatePage(page: Page, url: string, timeout?: number): Promise<void> {
+    const deadline = Date.now() + this._normalizeNavigationTimeout(timeout);
+
+    await page.goto(url, {
+      timeout: this._remainingTimeout(deadline),
+      waitUntil: "domcontentloaded",
+    });
+
+    const idleTimeout = Math.min(
+      BrowserConfig.networkIdleTimeout,
+      this._remainingTimeout(deadline),
+    );
+
+    if (idleTimeout <= 0) {
+      return;
+    }
+
+      await page.waitForLoadState("networkidle", {
+        timeout: idleTimeout,
+      });
   }
 
   // ===== Factory / Singleton =====
@@ -204,10 +291,7 @@ export class BrowserSession implements SessionRef {
             const tabId = nextTabId();
             this._pages.set(tabId, page);
             if (!this._page) {
-              this._page = page;
-              this._currentTabId = tabId;
-              this.snapshot = new PageSnapshot(page);
-              this.executor = new ActionExecutor(page, this);
+              this._attachCurrentPage(tabId, page);
             }
             this._setupPageListeners(tabId, page);
           }
@@ -285,10 +369,7 @@ export class BrowserSession implements SessionRef {
       let found = false;
       for (const [nextId, nextPage] of this._pages) {
         if (!nextPage.isClosed()) {
-          this._currentTabId = nextId;
-          this._page = nextPage;
-          this.snapshot = new PageSnapshot(nextPage);
-          this.executor = new ActionExecutor(nextPage, this);
+          this._attachCurrentPage(nextId, nextPage);
           found = true;
           break;
         }
@@ -336,10 +417,7 @@ export class BrowserSession implements SessionRef {
       const page = await this._context.newPage();
       const tabId = nextTabId();
       this._pages.set(tabId, page);
-      this._page = page;
-      this._currentTabId = tabId;
-      this.snapshot = new PageSnapshot(page);
-      this.executor = new ActionExecutor(page, this);
+      this._attachCurrentPage(tabId, page);
       this._setupPageListeners(tabId, page);
     }
     return this._page!;
@@ -347,20 +425,47 @@ export class BrowserSession implements SessionRef {
 
   // ===== Navigation =====
 
-  async visit(url: string): Promise<string> {
-    await this.ensureBrowser();
-    const page = await this.getPage();
+  async getPageForTab(tabId?: string, options?: { createIfMissing?: boolean }): Promise<Page | null> {
+    const resolved = await this._resolvePage(tabId, options);
+    return resolved.page;
+  }
 
-    await page.goto(url, { timeout: BrowserConfig.navigationTimeout });
-    await page.waitForLoadState("domcontentloaded");
-
-    try {
-      await page.waitForLoadState("networkidle", {
-        timeout: BrowserConfig.networkIdleTimeout,
-      });
-    } catch {
-      logger.debug("Network idle timeout — continuing");
+  async getPageInfo(tabId?: string): Promise<{ tabId: string | null; url: string; title: string }> {
+    const resolved = await this._resolvePage(tabId);
+    const page = resolved.page;
+    if (!page || page.isClosed()) {
+      return {
+        tabId: resolved.tabId,
+        url: "",
+        title: "",
+      };
     }
+
+    let title = "";
+    try {
+      title = await page.title();
+    } catch {
+      // ignore transient title failures
+    }
+
+    return {
+      tabId: resolved.tabId,
+      url: page.url(),
+      title,
+    };
+  }
+
+  async visit(url: string, options?: { tabId?: string; timeout?: number }): Promise<string> {
+    const resolved = await this._resolvePage(options?.tabId, {
+      createIfMissing: !options?.tabId,
+    });
+    const page = resolved.page;
+
+    if (!page) {
+      throw new Error("No active page");
+    }
+
+    await this._navigatePage(page, url, options?.timeout);
 
     return `Navigated to ${page.url()}`;
   }
@@ -368,34 +473,51 @@ export class BrowserSession implements SessionRef {
   // ===== Snapshot =====
 
   async getSnapshot(options?: {
+    tabId?: string;
     forceRefresh?: boolean;
     diffOnly?: boolean;
     viewportLimit?: boolean;
   }): Promise<string> {
-    if (!this.snapshot) return "<empty>";
-    return this.snapshot.capture(options);
+    const resolved = await this._resolvePage(options?.tabId);
+    if (!resolved.page) return "<empty>";
+    return this._getSnapshotForPage(resolved.page).capture(options);
   }
 
   async getSnapshotWithElements(options?: {
+    tabId?: string;
     viewportLimit?: boolean;
   }): Promise<Record<string, unknown>> {
-    if (!this.snapshot) {
+    const resolved = await this._resolvePage(options?.tabId);
+    if (!resolved.page) {
       return { snapshotText: "<empty>", elements: {} };
     }
-    return this.snapshot.getFullResult(options);
+    return this._getSnapshotForPage(resolved.page).getFullResult(options);
   }
 
-  getLastElements(): Record<string, unknown> {
+  getLastElements(tabId?: string): Record<string, unknown> {
+    if (tabId) {
+      const page = this._pages.get(tabId);
+      if (!page || page.isClosed()) {
+        return {};
+      }
+      return this._getSnapshotForPage(page).getLastElements();
+    }
+
     return this.snapshot?.getLastElements() ?? {};
   }
 
   // ===== Action Execution =====
 
-  async execAction(action: Record<string, unknown>): Promise<ActionResult> {
-    if (!this.executor) {
+  async execAction(action: Record<string, unknown>, tabId?: string): Promise<ActionResult> {
+    const resolved = await this._resolvePage(tabId);
+    if (!resolved.page) {
       return { success: false, message: "No executor available", details: {} };
     }
-    return this.executor.execute(action);
+
+    const executor = resolved.page === this._page && this.executor
+      ? this.executor
+      : this._getExecutorForPage(resolved.page);
+    return executor.execute(action);
   }
 
   // ===== Tab Management =====
@@ -428,10 +550,7 @@ export class BrowserSession implements SessionRef {
       return false;
     }
 
-    this._currentTabId = tabId;
-    this._page = page;
-    this.snapshot = new PageSnapshot(page);
-    this.executor = new ActionExecutor(page, this);
+    this._attachCurrentPage(tabId, page);
 
     logger.debug({ tabId }, "Switched to tab");
     return true;
@@ -457,7 +576,7 @@ export class BrowserSession implements SessionRef {
     return true;
   }
 
-  async createNewTab(url?: string): Promise<[string, Page]> {
+  async createNewTab(url?: string, options?: { timeout?: number }): Promise<[string, Page]> {
     await this.ensureBrowser();
     if (!this._context) {
       throw new Error("No browser context available");
@@ -468,8 +587,7 @@ export class BrowserSession implements SessionRef {
 
     if (url) {
       try {
-        await page.goto(url, { timeout: BrowserConfig.navigationTimeout });
-        await page.waitForLoadState("domcontentloaded");
+        await this._navigatePage(page, url, options?.timeout);
       } catch (e) {
         logger.warn({ url, err: e }, "Navigation failed for new tab");
       }
@@ -503,7 +621,7 @@ export class BrowserSession implements SessionRef {
     return group;
   }
 
-  async createTabInGroup(taskId: string, url?: string): Promise<[string, Page]> {
+  async createTabInGroup(taskId: string, url?: string, options?: { timeout?: number }): Promise<[string, Page]> {
     await this.ensureBrowser();
     if (!this._context) {
       throw new Error("No browser context available");
@@ -519,8 +637,7 @@ export class BrowserSession implements SessionRef {
 
     if (url) {
       try {
-        await page.goto(url, { timeout: BrowserConfig.navigationTimeout });
-        await page.waitForLoadState("domcontentloaded");
+        await this._navigatePage(page, url, options?.timeout);
       } catch (e) {
         logger.warn({ url, err: e }, "Navigation failed for new tab in group");
       }
@@ -576,8 +693,8 @@ export class BrowserSession implements SessionRef {
 
   // ===== Screenshot =====
 
-  async takeScreenshot(options?: { type?: "jpeg" | "png"; quality?: number }): Promise<Buffer | null> {
-    const page = this._page;
+  async takeScreenshot(options?: { tabId?: string; type?: "jpeg" | "png"; quality?: number }): Promise<Buffer | null> {
+    const page = await this.getPageForTab(options?.tabId);
     if (!page || page.isClosed()) return null;
 
     try {
@@ -600,11 +717,11 @@ export class BrowserSession implements SessionRef {
 
   // ===== PDF =====
 
-  async exportPdf(): Promise<Buffer | null> {
+  async exportPdf(tabId?: string): Promise<Buffer | null> {
     if (this._config.headless === false) {
       throw new Error("PDF export requires headless mode");
     }
-    const page = this._page;
+    const page = await this.getPageForTab(tabId);
     if (!page || page.isClosed()) return null;
 
     try {
@@ -617,8 +734,8 @@ export class BrowserSession implements SessionRef {
 
   // ===== Text extraction =====
 
-  async getPageText(): Promise<string> {
-    const page = this._page;
+  async getPageText(tabId?: string): Promise<string> {
+    const page = await this.getPageForTab(tabId);
     if (!page || page.isClosed()) return "";
 
     try {
@@ -631,8 +748,8 @@ export class BrowserSession implements SessionRef {
 
   // ===== Evaluate =====
 
-  async evaluate(expression: string): Promise<unknown> {
-    const page = this._page;
+  async evaluate(expression: string, tabId?: string): Promise<unknown> {
+    const page = await this.getPageForTab(tabId);
     if (!page || page.isClosed()) {
       throw new Error("No active page");
     }

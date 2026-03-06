@@ -1,38 +1,50 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { BrowserSession } from "../../browser/browser-session.js";
+import { getTabWriteConflict, sendRouteError, sendTabLocked } from "../route-utils.js";
 
 interface NavigateBody {
   url: string;
   newTab?: boolean;
   timeout?: number;
+  tabId?: string;
+  owner?: string;
 }
 
 export function registerNavigateRoute(app: FastifyInstance) {
   app.post("/navigate", async (request: FastifyRequest<{ Body: NavigateBody }>, reply) => {
     const session = (app as any).session as BrowserSession;
-    const { url, newTab } = request.body || {} as NavigateBody;
+    const { url, newTab, timeout, tabId, owner } = request.body || {} as NavigateBody;
 
     if (!url) {
       return reply.code(400).send({ error: "url is required" });
     }
 
+    if (timeout !== undefined && (!Number.isFinite(timeout) || timeout <= 0)) {
+      return reply.code(400).send({ error: "timeout must be a positive number" });
+    }
+
     try {
       if (newTab) {
-        const [tabId] = await session.createNewTab(url);
-        await session.switchToTab(tabId);
-        const page = session.currentPage;
-        let title = "";
-        try { title = page && !page.isClosed() ? await page.title() : ""; } catch { /* closed */ }
-        return { tabId, url: page && !page.isClosed() ? page.url() : url, title };
+        const [newTabId] = await session.createNewTab(url, { timeout });
+        await session.switchToTab(newTabId);
+        const info = await session.getPageInfo(newTabId);
+        return { tabId: newTabId, url: info.url || url, title: info.title };
       }
 
-      await session.visit(url);
-      const page = session.currentPage;
-      let title = "";
-      try { title = page && !page.isClosed() ? await page.title() : ""; } catch { /* closed */ }
-      return { url: page && !page.isClosed() ? page.url() : url, title };
+      const conflict = getTabWriteConflict(session, { tabId, owner });
+      if (conflict) {
+        return sendTabLocked(reply, conflict);
+      }
+
+      await session.visit(url, { tabId, timeout });
+      const info = await session.getPageInfo(tabId);
+      return {
+        tabId: info.tabId,
+        url: info.url || url,
+        title: info.title,
+      };
     } catch (e) {
-      return reply.code(500).send({ error: "Navigation failed" });
+      return sendRouteError(reply, e, "Navigation failed");
     }
   });
 }

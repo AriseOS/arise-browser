@@ -1,6 +1,7 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { BrowserSession } from "../../browser/browser-session.js";
 import type { ActionDict } from "../../types/index.js";
+import { getTabWriteConflict, sendRouteError, sendTabLocked } from "../route-utils.js";
 
 // Pinchtab kind -> AriseBrowser type mapping
 const KIND_MAP: Record<string, string> = {
@@ -14,7 +15,7 @@ const KIND_MAP: Record<string, string> = {
   focus: "focus",
 };
 
-function mapPinchtabAction(body: Record<string, unknown>): ActionDict {
+export function mapPinchtabAction(body: Record<string, unknown>): ActionDict {
   const kind = body.kind as string | undefined;
 
   // If already has 'type' field, pass through
@@ -59,6 +60,8 @@ export function registerActionRoute(app: FastifyInstance) {
   app.post("/action", async (request: FastifyRequest<{ Body: Record<string, unknown> }>, reply) => {
     const session = (app as any).session as BrowserSession;
     const body = request.body || {};
+    const tabId = typeof body.tabId === "string" ? body.tabId : undefined;
+    const owner = typeof body.owner === "string" ? body.owner : undefined;
 
     const action = mapPinchtabAction(body);
 
@@ -67,10 +70,15 @@ export function registerActionRoute(app: FastifyInstance) {
     }
 
     try {
-      const result = await session.execAction(action);
+      const conflict = getTabWriteConflict(session, { tabId, owner });
+      if (conflict) {
+        return sendTabLocked(reply, conflict);
+      }
+
+      const result = await session.execAction(action, tabId);
       return result;
     } catch (e) {
-      return reply.code(500).send({ error: "Action execution failed" });
+      return sendRouteError(reply, e, "Action execution failed");
     }
   });
 }

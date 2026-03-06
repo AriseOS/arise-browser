@@ -93,7 +93,7 @@ Your agent can reference `e42` from 5 actions ago. It still resolves.
 ## 5. Multi-Agent Ready
 
 - **Tab Groups** — Organize tabs by task, color-coded
-- **Tab Locks** — TTL-based exclusive access, prevents two agents from stomping on the same page
+- **Tab Locks** — TTL-based exclusive access enforced on write routes, prevents two agents from stomping on the same page
 - **Session Registry** — Multiple sessions share one browser
 
 ## Quick Start
@@ -143,6 +143,12 @@ ARISE_BROWSER_TOKEN=secret npx arise-browser --port 8080
 | `/upload` | POST | Upload file |
 | `/download` | GET | Download file |
 | `/health` | GET | Health check |
+
+Notes:
+- Read routes support optional `tabId` where applicable (`/snapshot`, `/text`, `/screenshot`, `/pdf`, `/evaluate`, `/download`).
+- Write routes that target a tab accept optional `owner`; locked tabs return `423 Locked` unless the owner matches.
+- `/navigate` accepts optional `tabId` and `timeout` (milliseconds).
+- `/recording/export` works after `/recording/stop` for recently completed recordings.
 
 ## Library Usage
 

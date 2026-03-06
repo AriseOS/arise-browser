@@ -2,6 +2,7 @@
  * AriseBrowser HTTP server — Fastify-based, Pinchtab-compatible API.
  */
 
+import { randomUUID } from "node:crypto";
 import Fastify, { type FastifyInstance } from "fastify";
 import { BrowserSession } from "../browser/browser-session.js";
 import { createLogger } from "../logger.js";
@@ -44,7 +45,7 @@ export async function createServer(
   }
 
   // Create and attach browser session
-  const session = BrowserSession.create(browserConfig, "server");
+  const session = BrowserSession.create(browserConfig, `server:${randomUUID()}`);
   await session.ensureBrowser();
 
   // Decorate with session reference

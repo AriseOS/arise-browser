@@ -1,21 +1,25 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { BrowserSession } from "../../browser/browser-session.js";
+import { sendRouteError } from "../route-utils.js";
+
+interface TextQuery {
+  tabId?: string;
+}
 
 export function registerTextRoute(app: FastifyInstance) {
-  app.get("/text", async (_request, reply) => {
+  app.get("/text", async (request: FastifyRequest<{ Querystring: TextQuery }>, reply) => {
     const session = (app as any).session as BrowserSession;
+    const { tabId } = request.query;
     try {
-      const text = await session.getPageText();
-      const page = session.currentPage;
-      let title = "";
-      try { title = page && !page.isClosed() ? await page.title() : ""; } catch { /* closed */ }
+      const text = await session.getPageText(tabId);
+      const info = await session.getPageInfo(tabId);
       return {
         text,
-        url: page && !page.isClosed() ? page.url() : "",
-        title,
+        url: info.url,
+        title: info.title,
       };
     } catch (e) {
-      return reply.code(500).send({ error: "Failed to extract text" });
+      return sendRouteError(reply, e, "Failed to extract text");
     }
   });
 }

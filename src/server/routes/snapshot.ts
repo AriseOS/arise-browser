@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
 import type { BrowserSession } from "../../browser/browser-session.js";
+import { sendRouteError } from "../route-utils.js";
 
 interface SnapshotQuery {
   tabId?: string;
@@ -46,7 +47,7 @@ function extractRoleFromCompactLine(line: string): string | null {
 export function registerSnapshotRoute(app: FastifyInstance) {
   app.get("/snapshot", async (request: FastifyRequest<{ Querystring: SnapshotQuery }>, reply) => {
     const session = (app as any).session as BrowserSession;
-    const { format = "yaml", diff, viewportLimit, filter } = request.query;
+    const { tabId, format = "yaml", diff, viewportLimit, filter } = request.query;
 
     const diffOnly = diff === "true" || diff === "1";
     const vpLimit = viewportLimit === "true" || viewportLimit === "1";
@@ -54,7 +55,7 @@ export function registerSnapshotRoute(app: FastifyInstance) {
 
     try {
       if (format === "json") {
-        const result = await session.getSnapshotWithElements({ viewportLimit: vpLimit });
+        const result = await session.getSnapshotWithElements({ tabId, viewportLimit: vpLimit });
         const elements = result.elements as Record<string, unknown>;
 
         // Convert to Pinchtab JSON format
@@ -73,19 +74,18 @@ export function registerSnapshotRoute(app: FastifyInstance) {
           }
         }
 
-        const page = session.currentPage;
-        let title = "";
-        try { title = page && !page.isClosed() ? await page.title() : ""; } catch { /* closed */ }
+        const info = await session.getPageInfo(tabId);
         return {
           nodes,
-          url: page && !page.isClosed() ? page.url() : "",
-          title,
+          url: info.url,
+          title: info.title,
           count,
         };
       }
 
       // yaml / compact / text all return the snapshot text
       const snapshotText = await session.getSnapshot({
+        tabId,
         diffOnly,
         viewportLimit: vpLimit,
       });
@@ -111,7 +111,7 @@ export function registerSnapshotRoute(app: FastifyInstance) {
       // Default: yaml
       return { snapshot: snapshotText, format: "yaml" };
     } catch (e) {
-      return reply.code(500).send({ error: "Snapshot capture failed" });
+      return sendRouteError(reply, e, "Snapshot capture failed");
     }
   });
 }
