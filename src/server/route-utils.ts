@@ -53,5 +53,5 @@ export function sendRouteError(
     return reply.code(400).send({ error: message });
   }
 
-  return reply.code(fallbackStatus).send({ error: fallbackMessage });
+  return reply.code(fallbackStatus).send({ error: fallbackMessage, detail: message });
 }

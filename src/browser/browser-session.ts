@@ -225,9 +225,13 @@ export class BrowserSession implements SessionRef {
       return;
     }
 
+    try {
       await page.waitForLoadState("networkidle", {
         timeout: idleTimeout,
       });
+    } catch {
+      // networkidle timeout is acceptable — DOM content already loaded
+    }
   }
 
   // ===== Factory / Singleton =====
