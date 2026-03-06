@@ -1,22 +1,34 @@
-# AriseBrowser
+<p align="center">
+  <strong>AriseBrowser</strong><br/>
+  Browser engine for AI agents.<br/>
+  Less tokens. Learns from users and agents. Actually clicks the right thing.
+</p>
 
-Browser engine for AI agents. Less tokens. Learns from users. Actually clicks the right thing.
+<p align="center">
+  <a href="https://github.com/AriseOS/arise-browser/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue?style=flat-square" alt="License"/></a>
+  <img src="https://img.shields.io/badge/Node.js-20+-339933?style=flat-square&logo=node.js&logoColor=white" alt="Node.js 20+"/>
+  <img src="https://img.shields.io/badge/Playwright-powered-2EAD33?style=flat-square&logo=playwright&logoColor=white" alt="Playwright"/>
+</p>
 
-## Why AriseBrowser
+---
 
-### 1. Use Fewer Tokens
+## 1. Use Fewer Tokens
 
 Every token your agent spends reading a page is money. AriseBrowser gives your agent a **compact accessibility snapshot** instead of raw HTML:
 
 - **YAML format** — ~50% fewer tokens than equivalent JSON snapshots
 - **Interactive filter** — Only show actionable elements (buttons, links, inputs). Skip the noise.
-- **Diff mode** — After the first snapshot, only send what changed. On a 10-step workflow, this can cut total snapshot tokens by 70%+.
+- **Diff mode** — After the first snapshot, only send what changed. On a 10-step workflow, this can cut total snapshot tokens by **70%+**.
 
 Your agent sees what it needs to act, nothing more.
 
-### 2. Record Once, Automate Forever
+## 2. Learn Once, Automate Forever
 
-AriseBrowser can **watch a user work** and turn it into a reusable skill:
+AriseBrowser has a built-in **behavior recording** system that captures workflows and exports them as structured traces (Learn protocol). Two ways to teach:
+
+### Watch a user work
+
+Record a human demonstrating a task — AriseBrowser captures every click, type, scroll, and navigation:
 
 ```
 User demonstrates: "Book a meeting room on Outlook"
@@ -28,20 +40,33 @@ Export as structured trace (Learn protocol):
     steps: [
       { url: "outlook.com/calendar", action: "click", target: "New Event" },
       { url: "...", action: "type", target: "Title", value: "Team Standup" },
-      { url: "...", action: "select", target: "Room", value: "Room 301" },
       ...
     ] }
          ↓
 Feed to your agent's memory / skill system
          ↓
-Next time: agent does it autonomously, adapts when UI changes
+Next time: agent does it autonomously
 ```
 
 This is how agents go from "follow my script" to "I watched you do it, I know how."
 
-No other browser automation tool does this out of the box.
+### Learn from agent execution
 
-### 3. Actions That Actually Work
+When your agent completes a task, AriseBrowser can record its actions too. Export the trace and feed it back as a skill — the agent improves with every successful run:
+
+```
+Agent completes: "Fill out expense report on SAP"
+         ↓
+AriseBrowser recorded the entire session
+         ↓
+Export → Learn protocol trace → store as reusable skill
+         ↓
+Next time: agent recalls the skill, executes faster, skips exploration
+```
+
+No other browser automation tool does recording + structured export out of the box.
+
+## 3. Actions That Actually Work
 
 Clicking a button sounds simple — until it's inside a custom dropdown, behind an overlay, or opens a new tab. Other tools dispatch a mouse event at coordinates (0,0) and call it a day.
 
@@ -55,7 +80,7 @@ AriseBrowser uses **multi-strategy execution**:
 
 15 action types total: click, type, select, scroll, hover, focus, enter, press_key, navigate, back, forward, wait, extract, mouse_control, mouse_drag.
 
-### 4. Element Refs That Don't Break
+## 4. Element Refs That Don't Break
 
 Other tools generate element IDs per snapshot — navigate away and they're gone. AriseBrowser uses a **3-layer persistent ref system**:
 
@@ -64,6 +89,12 @@ Other tools generate element IDs per snapshot — navigate away and they're gone
 3. **Signature** — Tag + class + text fingerprint for recovery after navigation
 
 Your agent can reference `e42` from 5 actions ago. It still resolves.
+
+## 5. Multi-Agent Ready
+
+- **Tab Groups** — Organize tabs by task, color-coded
+- **Tab Locks** — TTL-based exclusive access, prevents two agents from stomping on the same page
+- **Session Registry** — Multiple sessions share one browser
 
 ## Quick Start
 
@@ -133,11 +164,29 @@ const server = await createServer(
 await server.listen({ port: 9867 });
 ```
 
-## Multi-Agent
+## Comparison
 
-- **Tab Groups** — Organize tabs by task, color-coded
-- **Tab Locks** — TTL-based exclusive access, prevents two agents from stomping on the same page
-- **Session Registry** — Multiple sessions share one browser
+| Feature | AriseBrowser | Pinchtab |
+|---------|-------------|----------|
+| Snapshot format | YAML (~50% fewer tokens) + diff mode | JSON |
+| Persistent refs | 3-layer (WeakMap + aria-ref + signature) | Single pass |
+| Click strategy | Multi-strategy with state validation | Single attempt |
+| Select support | 12 fallback strategies | Empty stub |
+| Behavior recording | Built-in + Learn protocol export | Not available |
+| Multi-agent | Tab locks + session registry | Not available |
+| Coordinate handling | Viewport-validated | Hardcoded (0,0) |
+| Runtime | Node.js + Playwright | Go + CDP |
+| Pinchtab compatible | Yes (accepts `kind` field + `BRIDGE_*` env) | — |
+
+## Works with OpenClaw
+
+AriseBrowser ships with an [OpenClaw skill](skill/arise-browser/SKILL.md) and [plugin](plugin/openclaw.plugin.json). Your OpenClaw agent can discover, install, and use AriseBrowser automatically — no manual setup required.
+
+```bash
+# OpenClaw agents can use AriseBrowser as their browser backend
+# The skill teaches the agent the full API: navigate → snapshot → act → repeat
+# The plugin handles lifecycle: start, health check, stop
+```
 
 ## Environment Variables
 
