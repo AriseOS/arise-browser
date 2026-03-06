@@ -14,13 +14,52 @@
  */
 
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import { BrowserConfig, getUserAgent, getStealthHeaders } from "./config.js";
+import { BrowserConfig, getStealthContextOptions, getUserAgent } from "./config.js";
 import { PageSnapshot } from "./page-snapshot.js";
 import { ActionExecutor } from "./action-executor.js";
 import { createLogger } from "../logger.js";
 import type { AriseBrowserConfig, ActionResult, TabInfo, SessionRef } from "../types/index.js";
 
 const logger = createLogger("browser-session");
+
+function isLikelySingleExpression(source: string): boolean {
+  const trimmed = source.trim().replace(/;$/, "");
+  return !trimmed.includes("\n")
+    && !trimmed.includes(";")
+    && !/\b(return|const|let|var|if|for|while|switch|try|class|function)\b/.test(trimmed);
+}
+
+function getEvaluationFallback(expression: string, error: unknown): { source: string; mode: "sync" | "async" } | null {
+  const message = error instanceof Error ? error.message : String(error);
+  const source = expression.trim();
+
+  if (!source) {
+    return null;
+  }
+
+  if (message.includes("await is only valid")) {
+    if (isLikelySingleExpression(source)) {
+      return {
+        source: `(async () => (${source.replace(/;$/, "")}))()`,
+        mode: "async",
+      };
+    }
+
+    return {
+      source: `(async () => {\n${source}\n})()`,
+      mode: "async",
+    };
+  }
+
+  if (message.includes("Illegal return statement")) {
+    return {
+      source: `(() => {\n${source}\n})()`,
+      mode: "sync",
+    };
+  }
+
+  return null;
+}
 
 // ===== Tab Group =====
 
@@ -191,7 +230,7 @@ export class BrowserSession implements SessionRef {
         };
 
         if (this._config.stealthHeaders !== false) {
-          contextOpts.extraHTTPHeaders = getStealthHeaders();
+          Object.assign(contextOpts, getStealthContextOptions());
         }
 
         this._context = await this._browser.newContext(contextOpts);
@@ -214,7 +253,7 @@ export class BrowserSession implements SessionRef {
         };
 
         if (this._config.stealthHeaders !== false) {
-          contextOpts2.extraHTTPHeaders = getStealthHeaders();
+          Object.assign(contextOpts2, getStealthContextOptions());
         }
 
         this._context = await chromium.launchPersistentContext(
@@ -597,7 +636,18 @@ export class BrowserSession implements SessionRef {
     if (!page || page.isClosed()) {
       throw new Error("No active page");
     }
-    return page.evaluate(expression);
+
+    try {
+      return await page.evaluate(expression);
+    } catch (error) {
+      const fallback = getEvaluationFallback(expression, error);
+      if (!fallback) {
+        throw error;
+      }
+
+      logger.debug({ mode: fallback.mode }, "Retrying evaluation with wrapped function body");
+      return page.evaluate(fallback.source);
+    }
   }
 
   // ===== Cookies =====

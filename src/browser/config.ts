@@ -2,6 +2,8 @@
  * Browser configuration — timeouts, stealth, viewport defaults.
  */
 
+import type { BrowserContextOptions } from "playwright";
+
 export const BrowserConfig = {
   // Timeouts (ms)
   actionTimeout: 3_000,
@@ -35,18 +37,19 @@ export function getUserAgent(): string {
   return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
 }
 
+export function getStealthContextOptions(): Pick<BrowserContextOptions, "locale"> {
+  return {
+    locale: "en-US",
+  };
+}
+
+/**
+ * @deprecated Do not apply these values as context-level extra HTTP headers.
+ * Navigation-only headers like Sec-Fetch-* and Upgrade-Insecure-Requests break
+ * XHR/fetch CORS preflights on apps like Resy. Prefer getStealthContextOptions().
+ */
 export function getStealthHeaders(): Record<string, string> {
   return {
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Sec-CH-UA": '"Chromium";v="131", "Not_A Brand";v="24"',
-    "Sec-CH-UA-Mobile": "?0",
-    "Sec-CH-UA-Platform": process.platform === "darwin" ? '"macOS"' : process.platform === "win32" ? '"Windows"' : '"Linux"',
-    "Sec-Fetch-Dest": "document",
-    "Sec-Fetch-Mode": "navigate",
-    "Sec-Fetch-Site": "none",
-    "Sec-Fetch-User": "?1",
-    "Upgrade-Insecure-Requests": "1",
   };
 }
