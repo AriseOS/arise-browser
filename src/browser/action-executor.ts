@@ -428,12 +428,21 @@ export class ActionExecutor {
 
       // Strategy 1: Native <select> element
       try {
-        await control.selectOption(value, { timeout: this.defaultTimeout });
+        const nativeSelectedValues = await control.selectOption(value, { timeout: this.defaultTimeout });
+        details.native_selected_values = nativeSelectedValues;
+
+        const nativeReturnMatched = this._valuesMatchExpected(nativeSelectedValues, variants);
+        details.native_return_matched = nativeReturnMatched;
+
         const afterNativeState = await this._readSelectState(control);
         details.native_after_state = afterNativeState;
+        const nativeStateMatched =
+          this._stateMatchesExpected(afterNativeState, variants) ||
+          this._stateChanged(beforeState, afterNativeState);
+        details.native_state_matched = nativeStateMatched;
 
-        if (this._stateMatchesExpected(afterNativeState, variants) || this._stateChanged(beforeState, afterNativeState)) {
-          details.strategy = "native_select";
+        if (nativeReturnMatched || nativeStateMatched) {
+          details.strategy = nativeStateMatched ? "native_select" : "native_select_return";
           return { success: true, message: `Selected '${value}' in ${target}`, details };
         }
       } catch (nativeErr) {
@@ -981,6 +990,21 @@ export class ActionExecutor {
     ].map((f) => this._normalizeSelectToken(f));
 
     return fields.some((field) => normalizedVariants.some((variant) => this._matchesVariant(field, variant)));
+  }
+
+  private _valuesMatchExpected(values: string[] | null | undefined, variants: string[]): boolean {
+    if (!Array.isArray(values) || values.length === 0 || variants.length === 0) return false;
+
+    const normalizedVariants = variants
+      .map((v) => this._normalizeSelectToken(v))
+      .filter((v) => !!v);
+    const normalizedValues = values
+      .map((value) => this._normalizeSelectToken(value))
+      .filter((value) => !!value);
+
+    return normalizedValues.some((value) =>
+      normalizedVariants.some((variant) => this._matchesVariant(value, variant)),
+    );
   }
 
   private _stateChanged(before: SelectState | null, after: SelectState | null): boolean {

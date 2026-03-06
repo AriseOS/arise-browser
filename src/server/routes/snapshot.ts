@@ -10,6 +10,21 @@ interface SnapshotQuery {
   filter?: "interactive" | "all";
 }
 
+interface SnapshotElement {
+  role?: unknown;
+  name?: unknown;
+  tagName?: unknown;
+  disabled?: unknown;
+  checked?: unknown;
+  expanded?: unknown;
+  level?: unknown;
+  href?: unknown;
+  value?: unknown;
+  placeholder?: unknown;
+  receivesPointerEvents?: unknown;
+  hasPointerCursor?: unknown;
+}
+
 const INTERACTIVE_ROLES = new Set([
   "link",
   "button",
@@ -44,6 +59,118 @@ function extractRoleFromCompactLine(line: string): string | null {
   return null;
 }
 
+function normalizeText(value: unknown): string {
+  if (typeof value !== "string") return "";
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function escapeCompactText(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+function parseRefOrder(ref: string): number {
+  const match = ref.match(/^e(\d+)$/i);
+  return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
+}
+
+function buildCompactLine(ref: string, element: SnapshotElement): string {
+  const role = normalizeText(element.role).toLowerCase() || "generic";
+  const accessibleName = normalizeText(element.name);
+  const placeholder = normalizeText(element.placeholder);
+  const value = normalizeText(element.value);
+  const tagName = normalizeText(element.tagName).toLowerCase();
+  const href = normalizeText(element.href);
+
+  const fallbackName =
+    !accessibleName && ["textbox", "searchbox", "combobox"].includes(role)
+      ? placeholder
+      : "";
+  const displayName = accessibleName || fallbackName;
+
+  const parts: string[] = [`- ${role}`];
+  if (displayName) {
+    parts.push(`"${escapeCompactText(displayName)}"`);
+  }
+
+  if (element.disabled === true) parts.push("[disabled]");
+  if (element.checked !== undefined && element.checked !== null) {
+    parts.push(`checked=${String(element.checked)}`);
+  }
+  if (element.expanded !== undefined && element.expanded !== null) {
+    parts.push(`expanded=${String(element.expanded)}`);
+  }
+
+  const level =
+    typeof element.level === "number"
+      ? element.level
+      : typeof element.level === "string"
+        ? Number(element.level)
+        : NaN;
+  if (Number.isInteger(level) && level > 0) {
+    parts.push(`[level=${level}]`);
+  }
+
+  parts.push(`[ref=${ref}]`);
+
+  if (element.receivesPointerEvents === true && element.hasPointerCursor === true) {
+    parts.push("[cursor=pointer]");
+  }
+
+  if (
+    tagName &&
+    (tagName !== role ||
+      !displayName ||
+      role === "combobox" ||
+      role === "textbox" ||
+      role === "searchbox")
+  ) {
+    parts.push(`[tag=${tagName}]`);
+  }
+
+  if (placeholder && placeholder !== displayName) {
+    parts.push(`[placeholder="${escapeCompactText(placeholder)}"]`);
+  }
+
+  if (
+    value &&
+    value !== displayName &&
+    value !== placeholder &&
+    !["link", "button"].includes(role)
+  ) {
+    parts.push(`[value="${escapeCompactText(value)}"]`);
+  }
+
+  if (href) {
+    parts.push(`-> ${href}`);
+  }
+
+  return parts.join(" ");
+}
+
+function buildCompactSnapshotFromElements(
+  elements: Record<string, unknown>,
+  interactiveOnly: boolean,
+): string {
+  const lines = Object.entries(elements)
+    .filter(([, el]) => el && typeof el === "object")
+    .sort(([refA], [refB]) => {
+      const orderA = parseRefOrder(refA);
+      const orderB = parseRefOrder(refB);
+      if (orderA !== orderB) return orderA - orderB;
+      return refA.localeCompare(refB);
+    })
+    .flatMap(([ref, el]) => {
+      const element = el as SnapshotElement;
+      const role = normalizeText(element.role).toLowerCase();
+      if (interactiveOnly && !INTERACTIVE_ROLES.has(role)) {
+        return [];
+      }
+      return [buildCompactLine(ref, element)];
+    });
+
+  return lines.join("\n");
+}
+
 export function registerSnapshotRoute(app: FastifyInstance) {
   app.get("/snapshot", async (request: FastifyRequest<{ Querystring: SnapshotQuery }>, reply) => {
     const session = (app as any).session as BrowserSession;
@@ -54,9 +181,16 @@ export function registerSnapshotRoute(app: FastifyInstance) {
     const interactiveOnly = filter === "interactive";
 
     try {
-      if (format === "json") {
+      if (format === "json" || (format === "compact" && !diffOnly)) {
         const result = await session.getSnapshotWithElements({ tabId, viewportLimit: vpLimit });
         const elements = result.elements as Record<string, unknown>;
+
+        if (format === "compact") {
+          const compactText = buildCompactSnapshotFromElements(elements, interactiveOnly);
+          if (compactText) {
+            return reply.type("text/plain").send(compactText);
+          }
+        }
 
         // Convert to Pinchtab JSON format
         const nodes: Record<string, unknown>[] = [];
