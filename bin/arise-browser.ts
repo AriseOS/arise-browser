@@ -26,10 +26,29 @@
 
 import { createServer } from "../src/server/server.js";
 import type { AriseBrowserConfig } from "../src/types/index.js";
-import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
 
-const require = createRequire(import.meta.url);
-const { version: PKG_VERSION } = require("../package.json");
+function getPackageVersion(): string {
+  const candidates = [
+    new URL("../package.json", import.meta.url),
+    new URL("../../package.json", import.meta.url),
+  ];
+
+  for (const candidate of candidates) {
+    try {
+      const pkg = JSON.parse(readFileSync(candidate, "utf-8")) as { version?: string };
+      if (pkg.version) {
+        return pkg.version;
+      }
+    } catch {
+      // try next path
+    }
+  }
+
+  throw new Error(`Could not locate package.json for CLI version. Tried: ${candidates.join(", ")}`);
+}
+
+const PKG_VERSION = getPackageVersion();
 
 const args = process.argv.slice(2);
 
