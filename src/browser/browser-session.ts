@@ -73,6 +73,8 @@ interface TabGroup {
   currentTabId?: string;
 }
 
+type PageRegisteredListener = (tabId: string, page: Page) => void | Promise<void>;
+
 // ===== Tab ID Generator =====
 
 let _tabCounter = 0;
@@ -98,6 +100,10 @@ export class BrowserSession implements SessionRef {
   private _currentTabId: string | null = null;
   private _snapshotCache = new WeakMap<Page, PageSnapshot>();
   private _executorCache = new WeakMap<Page, ActionExecutor>();
+  private _pageIds = new WeakMap<Page, string>();
+  private _pageListeners = new WeakSet<Page>();
+  private _pageRegisteredListeners = new Set<PageRegisteredListener>();
+  private _contextListenersAttached = false;
 
   // Tab Groups
   private _tabGroups = new Map<string, TabGroup>();
@@ -145,6 +151,13 @@ export class BrowserSession implements SessionRef {
     return this._pages;
   }
 
+  onPageRegistered(listener: PageRegisteredListener): () => void {
+    this._pageRegisteredListeners.add(listener);
+    return () => {
+      this._pageRegisteredListeners.delete(listener);
+    };
+  }
+
   private _getSnapshotForPage(page: Page): PageSnapshot {
     let snapshot = this._snapshotCache.get(page);
     if (!snapshot) {
@@ -168,6 +181,49 @@ export class BrowserSession implements SessionRef {
     this._page = page;
     this.snapshot = this._getSnapshotForPage(page);
     this.executor = this._getExecutorForPage(page);
+  }
+
+  private async _emitPageRegistered(tabId: string, page: Page): Promise<void> {
+    for (const listener of this._pageRegisteredListeners) {
+      try {
+        await listener(tabId, page);
+      } catch (e) {
+        logger.warn({ tabId, err: e }, "Page registered listener failed");
+      }
+    }
+  }
+
+  private async _registerPage(
+    page: Page,
+    options?: { tabId?: string; makeCurrent?: boolean; group?: TabGroup },
+  ): Promise<{ tabId: string; isNew: boolean }> {
+    const existingTabId = this._pageIds.get(page);
+    if (existingTabId) {
+      if (options?.group) {
+        options.group.tabs.set(existingTabId, page);
+      }
+      if (options?.makeCurrent) {
+        this._attachCurrentPage(existingTabId, page);
+      }
+      return { tabId: existingTabId, isNew: false };
+    }
+
+    const tabId = options?.tabId ?? nextTabId();
+    this._pages.set(tabId, page);
+    this._pageIds.set(page, tabId);
+
+    if (options?.group) {
+      options.group.tabs.set(tabId, page);
+    }
+
+    this._setupPageListeners(tabId, page);
+
+    if (options?.makeCurrent || !this._page) {
+      this._attachCurrentPage(tabId, page);
+    }
+
+    await this._emitPageRegistered(tabId, page);
+    return { tabId, isNew: true };
   }
 
   private async _resolvePage(
@@ -283,6 +339,7 @@ export class BrowserSession implements SessionRef {
           throw new Error("No browser contexts found via CDP");
         }
         this._context = contexts[0];
+        this._setupContextListeners();
         logger.info(
           { contexts: contexts.length, pages: this._context.pages().length },
           "CDP connection established",
@@ -292,12 +349,7 @@ export class BrowserSession implements SessionRef {
         for (const page of this._context.pages()) {
           const url = page.url();
           if (url && url !== "about:blank" && !page.isClosed()) {
-            const tabId = nextTabId();
-            this._pages.set(tabId, page);
-            if (!this._page) {
-              this._attachCurrentPage(tabId, page);
-            }
-            this._setupPageListeners(tabId, page);
+            await this._registerPage(page, { makeCurrent: !this._page });
           }
         }
         break;
@@ -322,6 +374,7 @@ export class BrowserSession implements SessionRef {
         }
 
         this._context = await this._browser.newContext(contextOpts);
+        this._setupContextListeners();
         logger.info("Standalone browser launched");
         break;
       }
@@ -348,6 +401,7 @@ export class BrowserSession implements SessionRef {
           this._config.profileDir,
           contextOpts2,
         );
+        this._setupContextListeners();
         // PersistentContext doesn't have a separate Browser object
         // but context.browser() may return the underlying browser
         this._browser = this._context.browser();
@@ -387,7 +441,25 @@ export class BrowserSession implements SessionRef {
     }
   }
 
+  private _setupContextListeners(): void {
+    if (!this._context || this._contextListenersAttached) {
+      return;
+    }
+
+    this._context.on("page", (page) => {
+      this._handleNewPage(page).catch((e) =>
+        logger.warn({ err: e }, "Error handling context page"),
+      );
+    });
+    this._contextListenersAttached = true;
+  }
+
   private _setupPageListeners(tabId: string, page: Page): void {
+    if (this._pageListeners.has(page)) {
+      return;
+    }
+    this._pageListeners.add(page);
+
     page.on("popup", (popup) => this._handleNewPage(popup).catch((e) =>
       logger.warn({ err: e }, "Error handling popup"),
     ));
@@ -403,10 +475,10 @@ export class BrowserSession implements SessionRef {
   }
 
   private async _handleNewPage(page: Page): Promise<void> {
-    const tabId = nextTabId();
-    this._pages.set(tabId, page);
-    this._setupPageListeners(tabId, page);
-    logger.info({ tabId, url: page.url() }, "New page auto-registered");
+    const { tabId, isNew } = await this._registerPage(page);
+    if (isNew) {
+      logger.info({ tabId, url: page.url() }, "New page auto-registered");
+    }
   }
 
   // ===== Page Access =====
@@ -419,10 +491,7 @@ export class BrowserSession implements SessionRef {
         throw new Error("No browser context available");
       }
       const page = await this._context.newPage();
-      const tabId = nextTabId();
-      this._pages.set(tabId, page);
-      this._attachCurrentPage(tabId, page);
-      this._setupPageListeners(tabId, page);
+      await this._registerPage(page, { makeCurrent: true });
     }
     return this._page!;
   }
@@ -587,18 +656,17 @@ export class BrowserSession implements SessionRef {
     }
 
     const page = await this._context.newPage();
-    const tabId = nextTabId();
+    const { tabId } = await this._registerPage(page);
 
     if (url) {
       try {
         await this._navigatePage(page, url, options?.timeout);
       } catch (e) {
         logger.warn({ url, err: e }, "Navigation failed for new tab");
+        await this.closeTab(tabId);
+        throw e;
       }
     }
-
-    this._pages.set(tabId, page);
-    this._setupPageListeners(tabId, page);
 
     return [tabId, page];
   }
@@ -637,19 +705,17 @@ export class BrowserSession implements SessionRef {
     }
 
     const page = await this._context.newPage();
-    const tabId = nextTabId();
+    const { tabId } = await this._registerPage(page, { group });
 
     if (url) {
       try {
         await this._navigatePage(page, url, options?.timeout);
       } catch (e) {
         logger.warn({ url, err: e }, "Navigation failed for new tab in group");
+        await this.closeTab(tabId);
+        throw e;
       }
     }
-
-    group.tabs.set(tabId, page);
-    this._pages.set(tabId, page);
-    this._setupPageListeners(tabId, page);
 
     logger.info({ tabId, taskId, groupTitle: group.title }, "Created tab in group");
     return [tabId, page];
@@ -830,6 +896,7 @@ export class BrowserSession implements SessionRef {
       }
     }
 
+    this._contextListenersAttached = false;
     BrowserSession._instances.delete(this._sessionId);
   }
 

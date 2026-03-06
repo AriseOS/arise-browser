@@ -15,11 +15,12 @@
     }
   },
   "scripts": {
-    "build": "tsc && node -e \"const fs=require('fs');fs.cpSync('src/browser/scripts','dist/src/browser/scripts',{recursive:true})\"",
+    "build": "tsc --incremental false && node -e \"const fs=require('fs');fs.cpSync('src/browser/scripts','dist/src/browser/scripts',{recursive:true})\"",
     "dev": "tsc --watch",
     "start": "node dist/bin/arise-browser.js",
+    "test": "npm run build && npx tsx --test test/regressions.test.ts",
     "test:api": "npx tsx scripts/test-api.ts",
-    "clean": "rm -rf dist"
+    "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""
   },
   "files": [
     "dist",

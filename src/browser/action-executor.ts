@@ -70,6 +70,12 @@ interface ClickObservation {
   expandedCount: number;
 }
 
+interface ActionHandlerResult {
+  success: boolean;
+  message: string;
+  details: Record<string, unknown>;
+}
+
 export class ActionExecutor {
   private page: Page;
   private session: SessionRef | undefined;
@@ -96,7 +102,7 @@ export class ActionExecutor {
     }
 
     try {
-      const handlers: Record<string, (a: ActionDict) => Promise<{ message: string; details: Record<string, unknown> }>> = {
+      const handlers: Record<string, (a: ActionDict) => Promise<ActionHandlerResult>> = {
         click: (a) => this._click(a),
         type: (a) => this._type(a),
         select: (a) => this._select(a),
@@ -124,10 +130,7 @@ export class ActionExecutor {
       }
 
       const result = await handler(action);
-      const msg = result.message;
-      const isError = msg.startsWith("Error:") || msg.startsWith("Action failed:");
-
-      return { success: !isError, message: msg, details: result.details };
+      return { success: result.success, message: result.message, details: result.details };
     } catch (exc) {
       logger.error({ actionType, err: exc }, "Action execution failed");
       return {
@@ -149,11 +152,11 @@ export class ActionExecutor {
 
   // ===== Click =====
 
-  private async _click(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _click(action: ActionDict): Promise<ActionHandlerResult> {
     const ref = action.ref as string | undefined;
     const selector = action.selector as string | undefined;
     if (!ref && !selector) {
-      return { message: "Error: click requires ref or selector", details: { error: "missing_target" } };
+      return { success: false, message: "Error: click requires ref or selector", details: { error: "missing_target" } };
     }
 
     const target = ref ? `[aria-ref='${escapeRef(ref)}']` : selector!;
@@ -170,7 +173,7 @@ export class ActionExecutor {
     const count = await this.page.locator(target).count();
     if (count === 0) {
       details.error = "element_not_found";
-      return { message: "Error: Click failed, element not found", details };
+      return { success: false, message: "Error: Click failed, element not found", details };
     }
 
     const element = this.page.locator(target).first();
@@ -303,6 +306,7 @@ export class ActionExecutor {
         details.ctrl_click_elapsed_ms = elapsedMs;
 
         return {
+          success: true,
           message: `Clicked element, opened in new tab ${newTabId}`,
           details,
         };
@@ -349,6 +353,7 @@ export class ActionExecutor {
         details.click_method = "all_failed";
         details.error = String(e);
         return {
+          success: false,
           message: `Error: All click strategies failed for ${target}`,
           details,
         };
@@ -363,22 +368,23 @@ export class ActionExecutor {
       details.no_state_change = true;
       details.warning = "no_state_change";
       return {
+        success: true,
         message: `Clicked element (${details.click_method}): ${target} (no observable page state change)`,
         details,
       };
     }
 
-    return { message: `Clicked element (${details.click_method}): ${target}`, details };
+    return { success: true, message: `Clicked element (${details.click_method}): ${target}`, details };
   }
 
   // ===== Type =====
 
-  private async _type(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _type(action: ActionDict): Promise<ActionHandlerResult> {
     const ref = action.ref as string | undefined;
     const text = (action.text as string) || "";
 
     if (!ref) {
-      return { message: "Error: type requires ref", details: { error: "missing_ref" } };
+      return { success: false, message: "Error: type requires ref", details: { error: "missing_ref" } };
     }
 
     const target = `[aria-ref='${escapeRef(ref)}']`;
@@ -386,22 +392,22 @@ export class ActionExecutor {
 
     try {
       await this.page.fill(target, text, { timeout: this.shortTimeout });
-      return { message: `Typed '${text}' into ${target}`, details };
+      return { success: true, message: `Typed '${text}' into ${target}`, details };
     } catch (exc) {
       details.error = String(exc);
-      return { message: `Type failed: ${exc}`, details };
+      return { success: false, message: `Type failed: ${exc}`, details };
     }
   }
 
   // ===== Select =====
 
-  private async _select(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _select(action: ActionDict): Promise<ActionHandlerResult> {
     const ref = action.ref as string | undefined;
     const selector = action.selector as string | undefined;
     const value = (action.value as string) || "";
 
     if (!ref && !selector) {
-      return { message: "Error: select requires ref or selector", details: { error: "missing_target" } };
+      return { success: false, message: "Error: select requires ref or selector", details: { error: "missing_target" } };
     }
 
     const target = ref ? `[aria-ref='${escapeRef(ref)}']` : selector!;
@@ -414,7 +420,7 @@ export class ActionExecutor {
       const controlCount = await control.count();
       if (controlCount === 0) {
         details.error = "element_not_found";
-        return { message: "Error: Select failed, element not found", details };
+        return { success: false, message: "Error: Select failed, element not found", details };
       }
 
       const beforeState = await this._readSelectState(control);
@@ -428,7 +434,7 @@ export class ActionExecutor {
 
         if (this._stateMatchesExpected(afterNativeState, variants) || this._stateChanged(beforeState, afterNativeState)) {
           details.strategy = "native_select";
-          return { message: `Selected '${value}' in ${target}`, details };
+          return { success: true, message: `Selected '${value}' in ${target}`, details };
         }
       } catch (nativeErr) {
         details.native_error = String(nativeErr);
@@ -441,20 +447,20 @@ export class ActionExecutor {
 
       if (customClicked && (this._stateMatchesExpected(afterState, variants) || this._stateChanged(beforeState, afterState))) {
         details.strategy = "custom_select";
-        return { message: `Selected '${value}' in ${target}`, details };
+        return { success: true, message: `Selected '${value}' in ${target}`, details };
       }
 
       details.error = "selection_not_verified";
-      return { message: `Select failed: could not verify selection '${value}' in ${target}`, details };
+      return { success: false, message: `Select failed: could not verify selection '${value}' in ${target}`, details };
     } catch (err) {
       details.error = String(err);
-      return { message: `Select failed: ${err}`, details };
+      return { success: false, message: `Select failed: ${err}`, details };
     }
   }
 
   // ===== Wait =====
 
-  private async _wait(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _wait(action: ActionDict): Promise<ActionHandlerResult> {
     const details: Record<string, unknown> = {
       wait_type: null,
       timeout: null,
@@ -466,7 +472,7 @@ export class ActionExecutor {
       details.wait_type = "timeout";
       details.timeout = ms;
       await new Promise((resolve) => setTimeout(resolve, ms));
-      return { message: `Waited ${ms}ms`, details };
+      return { success: true, message: `Waited ${ms}ms`, details };
     }
 
     if ("selector" in action) {
@@ -474,18 +480,18 @@ export class ActionExecutor {
       details.wait_type = "selector";
       details.selector = sel;
       await this.page.waitForSelector(sel, { timeout: this.defaultTimeout });
-      return { message: `Waited for ${sel}`, details };
+      return { success: true, message: `Waited for ${sel}`, details };
     }
 
-    return { message: "Error: wait requires timeout/selector", details };
+    return { success: false, message: "Error: wait requires timeout/selector", details };
   }
 
   // ===== Extract =====
 
-  private async _extract(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _extract(action: ActionDict): Promise<ActionHandlerResult> {
     const ref = action.ref as string | undefined;
     if (!ref) {
-      return { message: "Error: extract requires ref", details: { error: "missing_ref" } };
+      return { success: false, message: "Error: extract requires ref", details: { error: "missing_ref" } };
     }
 
     const target = `[aria-ref='${escapeRef(ref)}']`;
@@ -499,18 +505,19 @@ export class ActionExecutor {
       details.text_length = txt ? txt.length : 0;
 
       return {
+        success: true,
         message: `Extracted: ${txt ? txt.slice(0, 100) : "None"}`,
         details,
       };
     } catch (e) {
       details.error = String(e);
-      return { message: `Error: extract failed: ${e}`, details };
+      return { success: false, message: `Error: extract failed: ${e}`, details };
     }
   }
 
   // ===== Scroll =====
 
-  private async _scroll(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _scroll(action: ActionDict): Promise<ActionHandlerResult> {
     const direction = (action.direction as string) || "down";
     const amount = action.amount !== undefined ? Number(action.amount) : 300;
 
@@ -522,7 +529,7 @@ export class ActionExecutor {
     };
 
     if (direction !== "up" && direction !== "down") {
-      return { message: "Error: direction must be 'up' or 'down'", details };
+      return { success: false, message: "Error: direction must be 'up' or 'down'", details };
     }
 
     let amountInt: number;
@@ -531,7 +538,7 @@ export class ActionExecutor {
       amountInt = Math.max(-this.maxScrollAmount, Math.min(this.maxScrollAmount, amountInt));
       details.actual_amount = amountInt;
     } catch {
-      return { message: "Error: amount must be a valid number", details };
+      return { success: false, message: "Error: amount must be a valid number", details };
     }
 
     const scrollOffset = direction === "down" ? amountInt : -amountInt;
@@ -540,20 +547,20 @@ export class ActionExecutor {
     await this.page.evaluate((offset: number) => window.scrollBy(0, offset), scrollOffset);
     await new Promise((resolve) => setTimeout(resolve, 500));
 
-    return { message: `Scrolled ${direction} by ${Math.abs(amountInt)}px`, details };
+    return { success: true, message: `Scrolled ${direction} by ${Math.abs(amountInt)}px`, details };
   }
 
   // ===== Enter =====
 
-  private async _enter(_action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _enter(_action: ActionDict): Promise<ActionHandlerResult> {
     const details: Record<string, unknown> = { action_type: "enter", target: "focused_element" };
     await this.page.keyboard.press("Enter");
-    return { message: "Pressed Enter on focused element", details };
+    return { success: true, message: "Pressed Enter on focused element", details };
   }
 
   // ===== Mouse Control =====
 
-  private async _mouseControl(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _mouseControl(action: ActionDict): Promise<ActionHandlerResult> {
     const control = (action.control as string) || "click";
     const xCoord = Number(action.x) || 0;
     const yCoord = Number(action.y) || 0;
@@ -588,7 +595,7 @@ export class ActionExecutor {
           [xCoord, yCoord] as [number, number],
         );
         if (!found) throw new Error(`No element found at coordinates (${xCoord}, ${yCoord})`);
-        return { message: "Action 'click' performed on the target", details };
+        return { success: true, message: "Action 'click' performed on the target", details };
       } else if (control === "right_click") {
         const found = await this.page.evaluate(
           ([x, y]: [number, number]) => {
@@ -603,7 +610,7 @@ export class ActionExecutor {
           [xCoord, yCoord] as [number, number],
         );
         if (!found) throw new Error(`No element found at coordinates (${xCoord}, ${yCoord})`);
-        return { message: "Action 'right_click' performed on the target", details };
+        return { success: true, message: "Action 'right_click' performed on the target", details };
       } else if (control === "dblclick") {
         const found = await this.page.evaluate(
           ([x, y]: [number, number]) => {
@@ -628,23 +635,24 @@ export class ActionExecutor {
           [xCoord, yCoord] as [number, number],
         );
         if (!found) throw new Error(`No element found at coordinates (${xCoord}, ${yCoord})`);
-        return { message: "Action 'dblclick' performed on the target", details };
+        return { success: true, message: "Action 'dblclick' performed on the target", details };
       } else {
-        return { message: `Error: Invalid control action '${control}'`, details };
+        return { success: false, message: `Error: Invalid control action '${control}'`, details };
       }
     } catch (e) {
-      return { message: `Action failed: ${e}`, details };
+      return { success: false, message: `Action failed: ${e}`, details };
     }
   }
 
   // ===== Mouse Drag =====
 
-  private async _mouseDrag(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _mouseDrag(action: ActionDict): Promise<ActionHandlerResult> {
     const fromRef = action.from_ref as string | undefined;
     const toRef = action.to_ref as string | undefined;
 
     if (!fromRef || !toRef) {
       return {
+        success: false,
         message: "Error: mouse_drag requires from_ref and to_ref",
         details: { error: "missing_refs" },
       };
@@ -709,20 +717,22 @@ export class ActionExecutor {
       }
 
       return {
+        success: true,
         message: `Dragged from element [ref=${fromRef}] to element [ref=${toRef}]`,
         details,
       };
     } catch (e) {
-      return { message: `Action failed: ${e}`, details };
+      return { success: false, message: `Action failed: ${e}`, details };
     }
   }
 
   // ===== Press Key =====
 
-  private async _pressKey(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _pressKey(action: ActionDict): Promise<ActionHandlerResult> {
     const keys = action.keys as string[] | undefined;
     if (!keys || keys.length === 0) {
       return {
+        success: false,
         message: "Error: No keys specified",
         details: { action_type: "press_key", keys: "" },
       };
@@ -733,18 +743,18 @@ export class ActionExecutor {
 
     try {
       await this.page.keyboard.press(combinedKeys);
-      return { message: "Pressed keys in the browser", details };
+      return { success: true, message: "Pressed keys in the browser", details };
     } catch (e) {
-      return { message: `Action failed: ${e}`, details };
+      return { success: false, message: `Action failed: ${e}`, details };
     }
   }
 
   // ===== Navigate =====
 
-  private async _navigate(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _navigate(action: ActionDict): Promise<ActionHandlerResult> {
     const url = action.url as string | undefined;
     if (!url) {
-      return { message: "Error: navigate requires url", details: { error: "missing_url" } };
+      return { success: false, message: "Error: navigate requires url", details: { error: "missing_url" } };
     }
 
     const details: Record<string, unknown> = { action_type: "navigate", url };
@@ -752,43 +762,43 @@ export class ActionExecutor {
     try {
       await this.page.goto(url, { timeout: BrowserConfig.navigationTimeout });
       await this.page.waitForLoadState("domcontentloaded");
-      return { message: `Navigated to ${url}`, details };
+      return { success: true, message: `Navigated to ${url}`, details };
     } catch (e) {
       details.error = String(e);
-      return { message: `Navigation failed: ${e}`, details };
+      return { success: false, message: `Navigation failed: ${e}`, details };
     }
   }
 
   // ===== Back / Forward =====
 
-  private async _back(_action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _back(_action: ActionDict): Promise<ActionHandlerResult> {
     const details: Record<string, unknown> = { action_type: "back" };
     try {
       await this.page.goBack({ timeout: BrowserConfig.navigationTimeout });
-      return { message: "Navigated back", details };
+      return { success: true, message: "Navigated back", details };
     } catch (e) {
       details.error = String(e);
-      return { message: `Back navigation failed: ${e}`, details };
+      return { success: false, message: `Back navigation failed: ${e}`, details };
     }
   }
 
-  private async _forward(_action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _forward(_action: ActionDict): Promise<ActionHandlerResult> {
     const details: Record<string, unknown> = { action_type: "forward" };
     try {
       await this.page.goForward({ timeout: BrowserConfig.navigationTimeout });
-      return { message: "Navigated forward", details };
+      return { success: true, message: "Navigated forward", details };
     } catch (e) {
       details.error = String(e);
-      return { message: `Forward navigation failed: ${e}`, details };
+      return { success: false, message: `Forward navigation failed: ${e}`, details };
     }
   }
 
   // ===== Hover (new — Pinchtab compat) =====
 
-  private async _hover(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _hover(action: ActionDict): Promise<ActionHandlerResult> {
     const ref = action.ref as string | undefined;
     if (!ref) {
-      return { message: "Error: hover requires ref", details: { error: "missing_ref" } };
+      return { success: false, message: "Error: hover requires ref", details: { error: "missing_ref" } };
     }
 
     const target = `[aria-ref='${escapeRef(ref)}']`;
@@ -798,23 +808,23 @@ export class ActionExecutor {
       const count = await this.page.locator(target).count();
       if (count === 0) {
         details.error = "element_not_found";
-        return { message: "Error: Hover failed, element not found", details };
+        return { success: false, message: "Error: Hover failed, element not found", details };
       }
 
       await this.page.locator(target).first().hover({ timeout: this.defaultTimeout });
-      return { message: `Hovered over ${target}`, details };
+      return { success: true, message: `Hovered over ${target}`, details };
     } catch (e) {
       details.error = String(e);
-      return { message: `Hover failed: ${e}`, details };
+      return { success: false, message: `Hover failed: ${e}`, details };
     }
   }
 
   // ===== Focus (new — Pinchtab compat) =====
 
-  private async _focus(action: ActionDict): Promise<{ message: string; details: Record<string, unknown> }> {
+  private async _focus(action: ActionDict): Promise<ActionHandlerResult> {
     const ref = action.ref as string | undefined;
     if (!ref) {
-      return { message: "Error: focus requires ref", details: { error: "missing_ref" } };
+      return { success: false, message: "Error: focus requires ref", details: { error: "missing_ref" } };
     }
 
     const target = `[aria-ref='${escapeRef(ref)}']`;
@@ -824,14 +834,14 @@ export class ActionExecutor {
       const count = await this.page.locator(target).count();
       if (count === 0) {
         details.error = "element_not_found";
-        return { message: "Error: Focus failed, element not found", details };
+        return { success: false, message: "Error: Focus failed, element not found", details };
       }
 
       await this.page.locator(target).first().focus({ timeout: this.defaultTimeout });
-      return { message: `Focused on ${target}`, details };
+      return { success: true, message: `Focused on ${target}`, details };
     } catch (e) {
       details.error = String(e);
-      return { message: `Focus failed: ${e}`, details };
+      return { success: false, message: `Focus failed: ${e}`, details };
     }
   }
 

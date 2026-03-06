@@ -11,7 +11,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { Page, Response as PwResponse, CDPSession } from "playwright";
@@ -76,6 +76,7 @@ export interface BrowserSessionRef {
   readonly pages: ReadonlyMap<string, Page>;
   readonly snapshot: { getFullResult(): Promise<Record<string, unknown>> } | null;
   readonly currentTabId: string | null;
+  onPageRegistered?(listener: (tabId: string, page: Page) => void | Promise<void>): () => void;
 }
 
 // ===== BehaviorRecorder class =====
@@ -91,7 +92,6 @@ export class BehaviorRecorder {
   private _monitoredTabs = new Set<string>();
   private _tabPages = new Map<string, Page>();
   private _cdpSessions = new Map<string, CDPSession>();
-  private _fallbackTabCounter = 0;
 
   private _lastNavUrl: string | null = null;
   private _lastNavTime: number | null = null;
@@ -107,9 +107,10 @@ export class BehaviorRecorder {
   private _dataloadWindowMs = 3000;
 
   private _responseListeners = new Map<string, (resp: PwResponse) => void>();
+  private _unsubscribePageRegistered: (() => void) | null = null;
 
   constructor(enableSnapshotCapture = true) {
-    this.sessionId = `session_${new Date().toISOString().replace(/[:.]/g, "").slice(0, 15)}`;
+    this.sessionId = `recording_${randomUUID()}`;
     this._enableSnapshotCapture = enableSnapshotCapture;
   }
 
@@ -143,9 +144,16 @@ export class BehaviorRecorder {
     this.snapshots = {};
     this._monitoredTabs.clear();
     this._tabPages.clear();
-    this._fallbackTabCounter = 0;
+    this._unsubscribePageRegistered?.();
+    this._unsubscribePageRegistered = null;
 
     logger.info({ sessionId: this.sessionId }, "Starting behavior recording");
+
+    if (browserSession.onPageRegistered) {
+      this._unsubscribePageRegistered = browserSession.onPageRegistered((tabId, page) =>
+        this._setupForTab(tabId, page),
+      );
+    }
 
     await this._setupAllTabs();
 
@@ -195,6 +203,8 @@ export class BehaviorRecorder {
     this._cdpSessions.clear();
     this._browserSession = null;
     this._recentDataloadUrls.clear();
+    this._unsubscribePageRegistered?.();
+    this._unsubscribePageRegistered = null;
 
     if (this._dataloadCleanupTimer) {
       clearInterval(this._dataloadCleanupTimer);
