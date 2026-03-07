@@ -76,6 +76,35 @@ interface ActionHandlerResult {
   details: Record<string, unknown>;
 }
 
+type ClickIntent = "auto" | "same_tab" | "new_tab" | "ui";
+
+interface RecoveryMarker {
+  attr: string;
+  value: string;
+}
+
+interface RecoveredClickTarget {
+  locator: Locator | null;
+  selector: string | null;
+  reason: string;
+  candidateCount?: number;
+  matchedHref?: string | null;
+  matchedText?: string | null;
+  marker?: RecoveryMarker;
+}
+
+interface LinkVerificationResult {
+  ok: boolean;
+  mode: "same_tab" | "new_tab" | "hash" | "download" | "unknown";
+  reason?: string;
+  currentUrl: string;
+  expectedUrl: string | null;
+  matchedExpected: boolean;
+  downloadTriggered: boolean;
+  newTabId?: string | null;
+  newTabUrl?: string | null;
+}
+
 export class ActionExecutor {
   private page: Page;
   private session: SessionRef | undefined;
@@ -155,11 +184,20 @@ export class ActionExecutor {
   private async _click(action: ActionDict): Promise<ActionHandlerResult> {
     const ref = action.ref as string | undefined;
     const selector = action.selector as string | undefined;
+    const requestedIntent = this._normalizeClickIntent(action.clickIntent);
+    const requestedExpectedHref =
+      typeof action.expectedHref === "string" && action.expectedHref.trim()
+        ? action.expectedHref.trim()
+        : null;
+    const requestedExpectedText =
+      typeof action.expectedText === "string" && action.expectedText.trim()
+        ? action.expectedText.trim()
+        : null;
     if (!ref && !selector) {
       return { success: false, message: "Error: click requires ref or selector", details: { error: "missing_target" } };
     }
 
-    const target = ref ? `[aria-ref='${escapeRef(ref)}']` : selector!;
+    let target = ref ? `[aria-ref='${escapeRef(ref)}']` : selector!;
     const details: Record<string, unknown> = {
       ref: ref ?? null,
       selector: selector ?? null,
@@ -168,213 +206,177 @@ export class ActionExecutor {
       successful_strategy: null,
       click_method: null,
       new_tab_created: false,
+      click_intent_requested: requestedIntent,
+      expected_href: requestedExpectedHref,
+      expected_text: requestedExpectedText,
     };
 
-    const count = await this.page.locator(target).count();
-    if (count === 0) {
-      details.error = "element_not_found";
-      return { success: false, message: "Error: Click failed, element not found", details };
-    }
-
-    const element = this.page.locator(target).first();
-    details.successful_strategy = target;
-
-    let clickTarget = element;
-
-    // Collect element diagnostics
-    let elementDiag: ClickElementDiag | null = null;
+    let cleanupMarker: RecoveryMarker | null = null;
     try {
-      const diag = await element.evaluate((el: Element) => {
-        const text = ((el as HTMLElement).innerText || el.textContent || "").trim();
-        const rect = el.getBoundingClientRect();
-        const inViewport =
-          rect.width > 0 &&
-          rect.height > 0 &&
-          rect.bottom >= 0 &&
-          rect.right >= 0 &&
-          rect.top <= (window.innerHeight || document.documentElement.clientHeight) &&
-          rect.left <= (window.innerWidth || document.documentElement.clientWidth);
-        const closestLink = el.closest("a");
-        const descendantLinks = el.querySelectorAll("a[href]");
-        const descendantLink = descendantLinks.length === 1 ? descendantLinks[0] : null;
-        const descendantText = descendantLink
-          ? ((descendantLink as HTMLElement).innerText || descendantLink.textContent || "").trim()
-          : "";
-        return {
-          tag: el.tagName,
-          href: el.getAttribute("href"),
-          closestHref: closestLink ? closestLink.getAttribute("href") : null,
-          role: el.getAttribute("role"),
-          text: text ? text.slice(0, 200) : "",
-          descendantHref: descendantLink ? descendantLink.getAttribute("href") : null,
-          descendantText: descendantText ? descendantText.slice(0, 200) : "",
-          descendantCount: descendantLinks.length,
-          onclick: !!el.getAttribute("onclick") || typeof (el as any).onclick === "function",
-          inViewport,
-        };
-      });
-      elementDiag = diag as ClickElementDiag;
-      logger.debug({ elementDiag }, "Click element diagnostics");
-    } catch (e) {
-      logger.debug({ err: e }, "Click diagnostics failed");
-    }
+      let element = this.page.locator(target).first();
+      let count = await element.count();
+      if (count === 0 && ref && (requestedExpectedHref || requestedExpectedText)) {
+        details.recovery_attempted = true;
+        const recovered = await this._recoverClickTarget(requestedExpectedHref, requestedExpectedText);
+        details.recovery_result = recovered.reason;
+        if (recovered.candidateCount !== undefined) {
+          details.recovery_candidate_count = recovered.candidateCount;
+        }
+        if (recovered.matchedHref) {
+          details.recovered_href = recovered.matchedHref;
+        }
+        if (recovered.matchedText) {
+          details.recovered_text = recovered.matchedText;
+        }
+        if (!recovered.locator || !recovered.selector || !recovered.marker) {
+          details.error = recovered.reason;
+          return { success: false, message: `Error: Click failed, ${recovered.reason}`, details };
+        }
+        cleanupMarker = recovered.marker;
+        target = recovered.selector;
+        details.target = target;
+        details.recovered_target = target;
+        element = recovered.locator;
+        count = await element.count();
+      }
 
-    // Conservative redirect: if container wraps a single link, prefer that link
-    try {
-      if (elementDiag) {
-        const tag = elementDiag.tag;
-        const href = elementDiag.href;
-        const closestHref = elementDiag.closestHref;
-        const hasOnclick = elementDiag.onclick;
-        const descendantCount = elementDiag.descendantCount;
-        const descendantHref = elementDiag.descendantHref;
-        const sourceText = (elementDiag.text || "").trim();
-        const descendantText = (elementDiag.descendantText || "").trim();
-        const role = elementDiag.role;
-        const roleIsLink = (role || "").toLowerCase() === "link";
+      if (count === 0) {
+        details.error = "element_not_found";
+        return { success: false, message: "Error: Click failed, element not found", details };
+      }
 
-        if (
-          ["LI", "DIV", "SPAN"].includes(tag) &&
-          !href &&
-          !closestHref &&
-          !roleIsLink &&
-          !hasOnclick &&
-          descendantCount === 1 &&
-          descendantHref &&
-          sourceText &&
-          descendantText &&
-          (sourceText.toLowerCase().includes(descendantText.toLowerCase()) ||
-            descendantText.toLowerCase().includes(sourceText.toLowerCase()))
-        ) {
-          const descendantLocator = element.locator(":scope a[href]").first();
+      details.successful_strategy = target;
+
+      let clickTarget = element;
+
+      // Collect element diagnostics
+      let elementDiag: ClickElementDiag | null = null;
+      try {
+        const diag = await element.evaluate((el: Element) => {
+          const text = ((el as HTMLElement).innerText || el.textContent || "").trim();
+          const rect = el.getBoundingClientRect();
+          const inViewport =
+            rect.width > 0 &&
+            rect.height > 0 &&
+            rect.bottom >= 0 &&
+            rect.right >= 0 &&
+            rect.top <= (window.innerHeight || document.documentElement.clientHeight) &&
+            rect.left <= (window.innerWidth || document.documentElement.clientWidth);
+          const closestLink = el.closest("a");
+          const descendantLinks = el.querySelectorAll("a[href]");
+          const descendantLink = descendantLinks.length === 1 ? descendantLinks[0] : null;
+          const descendantText = descendantLink
+            ? ((descendantLink as HTMLElement).innerText || descendantLink.textContent || "").trim()
+            : "";
+          return {
+            tag: el.tagName,
+            href: el.getAttribute("href"),
+            closestHref: closestLink ? closestLink.getAttribute("href") : null,
+            role: el.getAttribute("role"),
+            text: text ? text.slice(0, 200) : "",
+            descendantHref: descendantLink ? descendantLink.getAttribute("href") : null,
+            descendantText: descendantText ? descendantText.slice(0, 200) : "",
+            descendantCount: descendantLinks.length,
+            onclick: !!el.getAttribute("onclick") || typeof (el as any).onclick === "function",
+            inViewport,
+          };
+        });
+        elementDiag = diag as ClickElementDiag;
+        logger.debug({ elementDiag }, "Click element diagnostics");
+      } catch (e) {
+        logger.debug({ err: e }, "Click diagnostics failed");
+      }
+
+      // Conservative redirect: if container wraps a single link, prefer that link
+      try {
+        if (elementDiag) {
+          const tag = elementDiag.tag;
+          const href = elementDiag.href;
+          const closestHref = elementDiag.closestHref;
+          const hasOnclick = elementDiag.onclick;
+          const descendantCount = elementDiag.descendantCount;
+          const descendantHref = elementDiag.descendantHref;
+          const sourceText = (elementDiag.text || "").trim();
+          const descendantText = (elementDiag.descendantText || "").trim();
+          const role = elementDiag.role;
+          const roleIsLink = (role || "").toLowerCase() === "link";
+
           if (
-            (await descendantLocator.count()) > 0 &&
-            (await descendantLocator.isVisible()) &&
-            (await descendantLocator.isEnabled())
+            ["LI", "DIV", "SPAN"].includes(tag) &&
+            !href &&
+            !closestHref &&
+            !roleIsLink &&
+            !hasOnclick &&
+            descendantCount === 1 &&
+            descendantHref &&
+            sourceText &&
+            descendantText &&
+            (sourceText.toLowerCase().includes(descendantText.toLowerCase()) ||
+              descendantText.toLowerCase().includes(sourceText.toLowerCase()))
           ) {
-            clickTarget = descendantLocator;
-            details.redirected_click_target = "descendant_a";
-            details.descendant_href = descendantHref;
-            logger.debug({ descendantHref }, "Redirecting click to descendant <a>");
+            const descendantLocator = element.locator(":scope a[href]").first();
+            if (
+              (await descendantLocator.count()) > 0 &&
+              (await descendantLocator.isVisible()) &&
+              (await descendantLocator.isEnabled())
+            ) {
+              clickTarget = descendantLocator;
+              details.redirected_click_target = "descendant_a";
+              details.descendant_href = descendantHref;
+              logger.debug({ descendantHref }, "Redirecting click to descendant <a>");
+            }
           }
         }
+      } catch (e) {
+        logger.debug({ err: e }, "Descendant link check failed");
       }
-    } catch (e) {
-      logger.debug({ err: e }, "Descendant link check failed");
-    }
 
-    const beforeObservation = await this._captureClickObservation(clickTarget);
-    details.before_observation = beforeObservation;
+      const beforeObservation = await this._captureClickObservation(clickTarget);
+      details.before_observation = beforeObservation;
 
-    const isLikelyLink = this._isLikelyLink(elementDiag);
-    let clickPerformed = false;
+      const resolvedExpectedHref = this._resolveExpectedHref(
+        requestedExpectedHref,
+        elementDiag,
+        beforeObservation.pageUrl,
+      );
+      const isLikelyLink = this._isLikelyLink(elementDiag) || !!resolvedExpectedHref;
+      const clickIntent = this._deriveClickIntent(
+        requestedIntent,
+        isLikelyLink,
+        beforeObservation.pageUrl,
+        resolvedExpectedHref,
+      );
+      details.click_intent = clickIntent;
+      details.expected_href = resolvedExpectedHref;
 
-    // Strategy 1: Ctrl+Click (links only, when tab session exists)
-    if (isLikelyLink && this.session) {
-      try {
-        const context = this.page.context();
-        const t0 = performance.now();
-        const tabsBefore = new Set((await this.session.getTabInfo()).map((t) => t.tab_id));
+      if (clickIntent === "auto") {
+        return await this._executeAutoClick(clickTarget, target, details, isLikelyLink, beforeObservation);
+      }
 
-        const newPagePromise = context.waitForEvent("page", {
-          timeout: this.shortTimeout,
-        });
-        newPagePromise.catch(() => {});
+      if (clickIntent === "new_tab" && this.session) {
+        const newTabResult = await this._attemptCtrlClickNewTab(clickTarget, target, details, resolvedExpectedHref);
+        if (newTabResult) {
+          return newTabResult;
+        }
+        details.new_tab_fallback = "same_tab";
+      }
 
-        await clickTarget.click({ modifiers: ["ControlOrMeta"] });
-        logger.debug("Click executed, waiting for page event...");
-
-        const newPage = await newPagePromise;
-        const elapsedMs = Math.round(performance.now() - t0);
-
-        await newPage.waitForLoadState("domcontentloaded");
-
-        const tabsAfter = await this.session.getTabInfo();
-        const newTabInfo = tabsAfter.find(
-          (t) => !tabsBefore.has(t.tab_id) && t.url !== "(closed)" && t.url !== "(error)",
+      if (clickIntent === "same_tab" || (clickIntent === "new_tab" && isLikelyLink)) {
+        return await this._executeSameTabLinkClick(
+          clickTarget,
+          target,
+          details,
+          resolvedExpectedHref,
+          beforeObservation.pageUrl,
         );
-        const newTabId = newTabInfo?.tab_id;
+      }
 
-        if (newTabId) {
-          await this.session.switchToTab(newTabId);
-        }
-
-        details.click_method = "ctrl_click_new_tab";
-        clickPerformed = true;
-        details.new_tab_created = true;
-        details.new_tab_index = newTabId;
-        details.ctrl_click_elapsed_ms = elapsedMs;
-
-        return {
-          success: true,
-          message: `Clicked element, opened in new tab ${newTabId}`,
-          details,
-        };
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (msg.includes("Timeout") || msg.includes("timeout")) {
-          // Ctrl+Click was dispatched but no new tab appeared; continue with same-tab verification.
-          details.click_method = "ctrl_click_same_tab";
-          clickPerformed = true;
-        } else {
-          (details.strategies_tried as unknown[]).push({
-            selector: target,
-            method: "ctrl_click",
-            error: msg,
-          });
-        }
+      return await this._executeUiClick(clickTarget, target, details, beforeObservation);
+    } finally {
+      if (cleanupMarker) {
+        await this._clearRecoveryMarker(cleanupMarker);
       }
     }
-
-    // Strategy 2: Regular click (default for non-link elements)
-    if (!clickPerformed) {
-      try {
-        await clickTarget.click({ timeout: this.defaultTimeout });
-        details.click_method = "click";
-        clickPerformed = true;
-      } catch (e) {
-        (details.strategies_tried as unknown[]).push({
-          selector: target,
-          method: "click",
-          error: String(e),
-        });
-      }
-    }
-
-    // Strategy 3: Force click fallback
-    if (!clickPerformed) {
-      logger.debug("Falling back to force click...");
-      try {
-        await clickTarget.click({ force: true, timeout: this.defaultTimeout });
-        details.click_method = "force_click";
-        clickPerformed = true;
-      } catch (e) {
-        logger.debug({ err: e }, "Force click also failed");
-        details.click_method = "all_failed";
-        details.error = String(e);
-        return {
-          success: false,
-          message: `Error: All click strategies failed for ${target}`,
-          details,
-        };
-      }
-    }
-
-    await this.page.waitForTimeout(180);
-    const afterObservation = await this._captureClickObservation(clickTarget);
-    details.after_observation = afterObservation;
-
-    if (!this._didClickObservationChange(beforeObservation, afterObservation)) {
-      details.no_state_change = true;
-      details.warning = "no_state_change";
-      return {
-        success: true,
-        message: `Clicked element (${details.click_method}): ${target} (no observable page state change)`,
-        details,
-      };
-    }
-
-    return { success: true, message: `Clicked element (${details.click_method}): ${target}`, details };
   }
 
   // ===== Type =====
@@ -855,6 +857,741 @@ export class ActionExecutor {
   }
 
   // ===== Utilities =====
+
+  private _normalizeClickIntent(intent: unknown): ClickIntent {
+    const raw = typeof intent === "string" ? intent.trim().toLowerCase() : "";
+    if (raw === "same_tab" || raw === "new_tab" || raw === "ui") {
+      return raw;
+    }
+    return "auto";
+  }
+
+  private _deriveClickIntent(
+    requestedIntent: ClickIntent,
+    isLikelyLink: boolean,
+    baseUrl: string,
+    expectedHref: string | null,
+  ): ClickIntent {
+    if (requestedIntent === "auto") {
+      return "auto";
+    }
+    if (requestedIntent === "ui") {
+      return "ui";
+    }
+    if (!isLikelyLink && !expectedHref) {
+      return "ui";
+    }
+    const hrefKind = this._classifyExpectedHref(baseUrl, expectedHref);
+    if (hrefKind === "custom") {
+      return "ui";
+    }
+    return requestedIntent;
+  }
+
+  private _resolveExpectedHref(
+    explicitHref: string | null,
+    diag: ClickElementDiag | null,
+    baseUrl: string,
+  ): string | null {
+    const rawHref = explicitHref || diag?.href || diag?.closestHref || diag?.descendantHref || null;
+    return this._resolveAbsoluteUrl(rawHref, baseUrl);
+  }
+
+  private _resolveAbsoluteUrl(url: string | null | undefined, baseUrl: string): string | null {
+    if (!url) return null;
+    try {
+      return new URL(url, baseUrl).href;
+    } catch {
+      return null;
+    }
+  }
+
+  private _classifyExpectedHref(
+    baseUrl: string,
+    expectedHref: string | null,
+  ): "none" | "standard" | "hash" | "custom" {
+    if (!expectedHref) return "none";
+    const expected = this._tryParseUrl(expectedHref, baseUrl);
+    if (!expected) return "custom";
+    if (!["http:", "https:"].includes(expected.protocol)) {
+      return "custom";
+    }
+
+    const base = this._tryParseUrl(baseUrl, expected.href);
+    if (
+      base &&
+      base.origin === expected.origin &&
+      this._normalizePath(base.pathname) === this._normalizePath(expected.pathname) &&
+      base.search === expected.search &&
+      !!expected.hash
+    ) {
+      return "hash";
+    }
+    return "standard";
+  }
+
+  private _tryParseUrl(url: string | null | undefined, baseUrl: string): URL | null {
+    if (!url) return null;
+    try {
+      return new URL(url, baseUrl);
+    } catch {
+      return null;
+    }
+  }
+
+  private _normalizePath(pathname: string): string {
+    const normalized = pathname.replace(/\/+$/, "");
+    return normalized || "/";
+  }
+
+  private _urlMatchesExpected(currentUrl: string, expectedUrl: string): boolean {
+    const current = this._tryParseUrl(currentUrl, expectedUrl);
+    const expected = this._tryParseUrl(expectedUrl, currentUrl);
+    if (!current || !expected) return currentUrl === expectedUrl;
+    if (current.origin !== expected.origin) return false;
+    if (this._normalizePath(current.pathname) !== this._normalizePath(expected.pathname)) return false;
+    if (expected.hash && current.hash !== expected.hash) return false;
+
+    const expectedKeys = Array.from(new Set(expected.searchParams.keys()));
+    for (const key of expectedKeys) {
+      const currentValues = current.searchParams.getAll(key).sort();
+      const expectedValues = expected.searchParams.getAll(key).sort();
+      if (!this._arraysEqual(currentValues, expectedValues)) return false;
+    }
+    return true;
+  }
+
+  private _arraysEqual(a: string[], b: string[]): boolean {
+    if (a.length !== b.length) return false;
+    return a.every((value, index) => value === b[index]);
+  }
+
+  private async _recoverClickTarget(
+    expectedHref: string | null,
+    expectedText: string | null,
+  ): Promise<RecoveredClickTarget> {
+    if (!expectedHref && !expectedText) {
+      return { locator: null, selector: null, reason: "element_not_found" };
+    }
+
+    const marker: RecoveryMarker = {
+      attr: "data-arise-click-recovery",
+      value: `recovery-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+    };
+
+    const recovered = await this.page.evaluate(
+      ({ expectedHref, expectedText, markerAttr, markerValue }) => {
+        const normalizeText = (value: string | null | undefined): string =>
+          (value || "").replace(/\s+/g, " ").trim().toLowerCase();
+        const normalizeHref = (value: string | null | undefined): string | null => {
+          if (!value) return null;
+          try {
+            return new URL(value, window.location.href).href;
+          } catch {
+            return null;
+          }
+        };
+
+        const expectedHrefAbs = normalizeHref(expectedHref);
+        const expectedTextNorm = normalizeText(expectedText);
+        const candidates: Array<{
+          element: Element;
+          score: number;
+          href: string | null;
+          text: string;
+        }> = [];
+
+        const elements = Array.from(document.querySelectorAll("a[href], [role='link']"));
+        for (const element of elements) {
+          const anchorLike = element.tagName.toLowerCase() === "a"
+            ? element
+            : element.querySelector("a[href]");
+          const rawHref =
+            element.getAttribute("href") ||
+            anchorLike?.getAttribute("href") ||
+            element.closest("a[href]")?.getAttribute("href") ||
+            null;
+          const href = normalizeHref(rawHref);
+          const text = ((element as HTMLElement).innerText || element.textContent || "")
+            .replace(/\s+/g, " ")
+            .trim()
+            .slice(0, 200);
+          const textNorm = normalizeText(text);
+          const hrefMatch = !!expectedHrefAbs && href === expectedHrefAbs;
+          const textMatch =
+            !!expectedTextNorm &&
+            !!textNorm &&
+            (textNorm === expectedTextNorm ||
+              textNorm.includes(expectedTextNorm) ||
+              expectedTextNorm.includes(textNorm));
+
+          let score = 0;
+          if (hrefMatch) score += 4;
+          if (textMatch) score += 2;
+          if (element.tagName.toLowerCase() === "a") score += 1;
+
+          const matches =
+            (expectedHrefAbs && hrefMatch) ||
+            (!expectedHrefAbs && expectedTextNorm && textMatch);
+          if (matches && score > 0) {
+            candidates.push({ element, score, href, text });
+          }
+        }
+
+        if (candidates.length === 0) {
+          return {
+            status: "not_found",
+            reason: "stale_ref_unresolved",
+            candidateCount: 0,
+          };
+        }
+
+        candidates.sort((a, b) => b.score - a.score);
+        const bestScore = candidates[0].score;
+        const topCandidates = candidates.filter((candidate) => candidate.score === bestScore);
+        if (topCandidates.length !== 1) {
+          return {
+            status: "ambiguous",
+            reason: "stale_ref_ambiguous",
+            candidateCount: topCandidates.length,
+          };
+        }
+
+        const winner = topCandidates[0];
+        winner.element.setAttribute(markerAttr, markerValue);
+        return {
+          status: "ok",
+          reason: "recovered",
+          candidateCount: 1,
+          matchedHref: winner.href,
+          matchedText: winner.text,
+        };
+      },
+      {
+        expectedHref,
+        expectedText,
+        markerAttr: marker.attr,
+        markerValue: marker.value,
+      },
+    ) as {
+      status: "ok" | "not_found" | "ambiguous";
+      reason: string;
+      candidateCount: number;
+      matchedHref?: string | null;
+      matchedText?: string | null;
+    };
+
+    if (recovered.status !== "ok") {
+      return {
+        locator: null,
+        selector: null,
+        reason: recovered.reason,
+        candidateCount: recovered.candidateCount,
+      };
+    }
+
+    const selector = `[${marker.attr}='${marker.value}']`;
+    const locator = this.page.locator(selector).first();
+    if ((await locator.count()) === 0) {
+      return {
+        locator: null,
+        selector: null,
+        reason: "stale_ref_unresolved",
+      };
+    }
+
+    return {
+      locator,
+      selector,
+      reason: recovered.reason,
+      candidateCount: recovered.candidateCount,
+      matchedHref: recovered.matchedHref ?? null,
+      matchedText: recovered.matchedText ?? null,
+      marker,
+    };
+  }
+
+  private async _clearRecoveryMarker(marker: RecoveryMarker): Promise<void> {
+    try {
+      await this.page.evaluate(({ attr, value }) => {
+        document
+          .querySelectorAll(`[${attr}='${value}']`)
+          .forEach((element) => element.removeAttribute(attr));
+      }, marker);
+    } catch {
+      // Ignore cleanup failures after navigation.
+    }
+  }
+
+  private async _executeAutoClick(
+    clickTarget: Locator,
+    target: string,
+    details: Record<string, unknown>,
+    isLikelyLink: boolean,
+    beforeObservation: ClickObservation,
+  ): Promise<ActionHandlerResult> {
+    let clickPerformed = false;
+
+    if (isLikelyLink && this.session) {
+      try {
+        const context = this.page.context();
+        const t0 = performance.now();
+        const tabsBefore = new Set((await this.session.getTabInfo()).map((t) => t.tab_id));
+
+        const newPagePromise = context.waitForEvent("page", {
+          timeout: this.shortTimeout,
+        });
+        newPagePromise.catch(() => {});
+
+        await clickTarget.click({ modifiers: ["ControlOrMeta"] });
+        logger.debug("Click executed, waiting for page event...");
+
+        const newPage = await newPagePromise;
+        const elapsedMs = Math.round(performance.now() - t0);
+
+        await newPage.waitForLoadState("domcontentloaded");
+
+        const tabsAfter = await this.session.getTabInfo();
+        const newTabInfo = tabsAfter.find(
+          (t) => !tabsBefore.has(t.tab_id) && t.url !== "(closed)" && t.url !== "(error)",
+        );
+        const newTabId = newTabInfo?.tab_id;
+
+        if (newTabId) {
+          await this.session.switchToTab(newTabId);
+        }
+
+        details.click_method = "ctrl_click_new_tab";
+        details.new_tab_created = true;
+        details.new_tab_index = newTabId;
+        details.ctrl_click_elapsed_ms = elapsedMs;
+
+        return {
+          success: true,
+          message: `Clicked element, opened in new tab ${newTabId}`,
+          details,
+        };
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (msg.includes("Timeout") || msg.includes("timeout")) {
+          details.click_method = "ctrl_click_same_tab";
+          clickPerformed = true;
+        } else {
+          (details.strategies_tried as unknown[]).push({
+            selector: target,
+            method: "ctrl_click",
+            error: msg,
+          });
+        }
+      }
+    }
+
+    if (!clickPerformed) {
+      try {
+        await clickTarget.click({ timeout: this.defaultTimeout });
+        details.click_method = "click";
+        clickPerformed = true;
+      } catch (e) {
+        (details.strategies_tried as unknown[]).push({
+          selector: target,
+          method: "click",
+          error: String(e),
+        });
+      }
+    }
+
+    if (!clickPerformed) {
+      logger.debug("Falling back to force click...");
+      try {
+        await clickTarget.click({ force: true, timeout: this.defaultTimeout });
+        details.click_method = "force_click";
+        clickPerformed = true;
+      } catch (e) {
+        logger.debug({ err: e }, "Force click also failed");
+        details.click_method = "all_failed";
+        details.error = String(e);
+        return {
+          success: false,
+          message: `Error: All click strategies failed for ${target}`,
+          details,
+        };
+      }
+    }
+
+    await this.page.waitForTimeout(180);
+    const afterObservation = await this._captureClickObservation(clickTarget);
+    details.after_observation = afterObservation;
+
+    if (!this._didClickObservationChange(beforeObservation, afterObservation)) {
+      details.no_state_change = true;
+      details.warning = "no_state_change";
+      return {
+        success: true,
+        message: `Clicked element (${details.click_method}): ${target} (no observable page state change)`,
+        details,
+      };
+    }
+
+    return { success: true, message: `Clicked element (${details.click_method}): ${target}`, details };
+  }
+
+  private async _attemptCtrlClickNewTab(
+    clickTarget: Locator,
+    target: string,
+    details: Record<string, unknown>,
+    expectedHref: string | null,
+  ): Promise<ActionHandlerResult | null> {
+    if (!this.session) return null;
+
+    try {
+      const context = this.page.context();
+      const t0 = performance.now();
+      const tabsBefore = new Set((await this.session.getTabInfo()).map((t) => t.tab_id));
+      const newPagePromise = context.waitForEvent("page", { timeout: this.shortTimeout });
+      newPagePromise.catch(() => {});
+
+      await clickTarget.click({ modifiers: ["ControlOrMeta"] });
+      const newPage = await newPagePromise;
+      const elapsedMs = Math.round(performance.now() - t0);
+      await newPage.waitForLoadState("domcontentloaded").catch(() => {});
+
+      const tabsAfter = await this.session.getTabInfo();
+      const newTabInfo = tabsAfter.find(
+        (tab) => !tabsBefore.has(tab.tab_id) && tab.url !== "(closed)" && tab.url !== "(error)",
+      );
+      const newTabId = newTabInfo?.tab_id ?? null;
+      const newTabUrl = newPage.url();
+      const matchedExpected = expectedHref ? this._urlMatchesExpected(newTabUrl, expectedHref) : true;
+
+      details.click_method = "ctrl_click_new_tab";
+      details.new_tab_created = true;
+      details.new_tab_index = newTabId;
+      details.ctrl_click_elapsed_ms = elapsedMs;
+      details.link_verification = {
+        mode: "new_tab",
+        current_url: newTabUrl,
+        expected_url: expectedHref,
+        matched_expected: matchedExpected,
+      };
+
+      if (!matchedExpected) {
+        details.error = "unexpected_new_tab_url";
+        return {
+          success: false,
+          message: `Error: Click opened unexpected new tab for ${target}`,
+          details,
+        };
+      }
+
+      if (newTabId) {
+        await this.session.switchToTab(newTabId);
+      }
+
+      return {
+        success: true,
+        message: `Clicked element, opened in new tab ${newTabId ?? "(untracked)"}`,
+        details,
+      };
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      (details.strategies_tried as unknown[]).push({
+        selector: target,
+        method: "ctrl_click",
+        error: msg,
+      });
+      if (msg.includes("Timeout") || msg.includes("timeout")) {
+        details.ctrl_click_timeout = true;
+      }
+      return null;
+    }
+  }
+
+  private async _executeSameTabLinkClick(
+    clickTarget: Locator,
+    target: string,
+    details: Record<string, unknown>,
+    expectedHref: string | null,
+    beforeUrl: string,
+  ): Promise<ActionHandlerResult> {
+    const firstAttempt = await this._clickAndVerifyLinkAttempt(clickTarget, "click", expectedHref, beforeUrl);
+    details.click_method = "click";
+    if (firstAttempt.clickError) {
+      (details.strategies_tried as unknown[]).push({
+        selector: target,
+        method: "click",
+        error: firstAttempt.clickError,
+      });
+    }
+    if (firstAttempt.verification) {
+      details.link_verification = firstAttempt.verification;
+    }
+    if (firstAttempt.ok && firstAttempt.verification) {
+      if (firstAttempt.verification.newTabId) {
+        details.new_tab_created = true;
+        details.new_tab_index = firstAttempt.verification.newTabId;
+      }
+      return {
+        success: true,
+        message: `Clicked element (click): ${target}`,
+        details,
+      };
+    }
+
+    const canRetryWithForce =
+      !!firstAttempt.clickError ||
+      (
+        !!firstAttempt.verification &&
+        firstAttempt.verification.currentUrl === beforeUrl &&
+        !firstAttempt.verification.newTabUrl &&
+        !firstAttempt.verification.downloadTriggered
+      );
+    if (!canRetryWithForce) {
+      details.error = firstAttempt.verification?.reason || firstAttempt.clickError || "link_click_no_navigation";
+      return {
+        success: false,
+        message: `Error: Link click did not reach expected destination for ${target}`,
+        details,
+      };
+    }
+
+    logger.debug("Link click did not navigate, retrying with force click...");
+    const secondAttempt = await this._clickAndVerifyLinkAttempt(clickTarget, "force_click", expectedHref, beforeUrl);
+    details.click_method = "force_click";
+    if (secondAttempt.clickError) {
+      (details.strategies_tried as unknown[]).push({
+        selector: target,
+        method: "force_click",
+        error: secondAttempt.clickError,
+      });
+    }
+    if (secondAttempt.verification) {
+      details.link_verification = secondAttempt.verification;
+    }
+    if (secondAttempt.ok && secondAttempt.verification) {
+      if (secondAttempt.verification.newTabId) {
+        details.new_tab_created = true;
+        details.new_tab_index = secondAttempt.verification.newTabId;
+      }
+      return {
+        success: true,
+        message: `Clicked element (force_click): ${target}`,
+        details,
+      };
+    }
+
+    details.error = secondAttempt.verification?.reason || secondAttempt.clickError || "link_click_no_navigation";
+    return {
+      success: false,
+      message: `Error: Link click did not reach expected destination for ${target}`,
+      details,
+    };
+  }
+
+  private async _clickAndVerifyLinkAttempt(
+    clickTarget: Locator,
+    method: "click" | "force_click",
+    expectedHref: string | null,
+    beforeUrl: string,
+  ): Promise<{ ok: boolean; clickError?: string; verification?: LinkVerificationResult }> {
+    const verificationTimeout = Math.min(this.shortTimeout, 2500);
+    let observedNewPage: Page | null = null;
+    let downloadTriggered = false;
+    const tabsBefore = this.session
+      ? new Set((await this.session.getTabInfo()).map((tab) => tab.tab_id))
+      : null;
+
+    if (this.session) {
+      void this.page.context()
+        .waitForEvent("page", { timeout: verificationTimeout })
+        .then(async (page) => {
+          observedNewPage = page;
+          await page.waitForLoadState("domcontentloaded").catch(() => {});
+        })
+        .catch(() => {});
+    }
+    void this.page
+      .waitForEvent("download", { timeout: verificationTimeout })
+      .then(() => {
+        downloadTriggered = true;
+      })
+      .catch(() => {});
+
+    try {
+      if (method === "force_click") {
+        await clickTarget.click({ force: true, timeout: this.defaultTimeout });
+      } else {
+        await clickTarget.click({ timeout: this.defaultTimeout });
+      }
+    } catch (e) {
+      return { ok: false, clickError: String(e) };
+    }
+
+    const verification = await this._waitForLinkVerification({
+      beforeUrl,
+      expectedHref,
+      timeoutMs: verificationTimeout,
+      getObservedNewPage: () => observedNewPage,
+      didDownload: () => downloadTriggered,
+      tabsBefore,
+    });
+    return { ok: verification.ok, verification };
+  }
+
+  private async _waitForLinkVerification(options: {
+    beforeUrl: string;
+    expectedHref: string | null;
+    timeoutMs: number;
+    getObservedNewPage: () => Page | null;
+    didDownload: () => boolean;
+    tabsBefore: Set<string> | null;
+  }): Promise<LinkVerificationResult> {
+    const expectedUrl = options.expectedHref
+      ? this._resolveAbsoluteUrl(options.expectedHref, options.beforeUrl)
+      : null;
+    const hrefKind = this._classifyExpectedHref(options.beforeUrl, expectedUrl);
+    const deadline = Date.now() + options.timeoutMs;
+
+    while (Date.now() < deadline) {
+      const newPage = options.getObservedNewPage();
+      if (newPage) {
+        const newTabUrl = newPage.url();
+        const matchedExpected = expectedUrl ? this._urlMatchesExpected(newTabUrl, expectedUrl) : true;
+        let newTabId: string | null = null;
+        if (this.session && options.tabsBefore) {
+          const tabsAfter = await this.session.getTabInfo();
+          const newTab = tabsAfter.find(
+            (tab) => !options.tabsBefore!.has(tab.tab_id) && tab.url !== "(closed)" && tab.url !== "(error)",
+          );
+          newTabId = newTab?.tab_id ?? null;
+          if (newTabId) {
+            await this.session.switchToTab(newTabId);
+          }
+        }
+
+        if (matchedExpected) {
+          return {
+            ok: true,
+            mode: "new_tab",
+            currentUrl: newTabUrl,
+            expectedUrl,
+            matchedExpected,
+            newTabId,
+            newTabUrl,
+            downloadTriggered: options.didDownload(),
+          };
+        }
+
+        return {
+          ok: false,
+          mode: "new_tab",
+          reason: "unexpected_new_tab_url",
+          currentUrl: newTabUrl,
+          expectedUrl,
+          matchedExpected,
+          newTabId,
+          newTabUrl,
+          downloadTriggered: options.didDownload(),
+        };
+      }
+
+      if (options.didDownload()) {
+        return {
+          ok: true,
+          mode: "download",
+          currentUrl: this.page.url(),
+          expectedUrl,
+          matchedExpected: true,
+          downloadTriggered: true,
+        };
+      }
+
+      const currentUrl = this.page.url();
+      const matchedExpected = expectedUrl
+        ? this._urlMatchesExpected(currentUrl, expectedUrl)
+        : currentUrl !== options.beforeUrl;
+      if (matchedExpected) {
+        return {
+          ok: true,
+          mode: hrefKind === "hash" ? "hash" : "same_tab",
+          currentUrl,
+          expectedUrl,
+          matchedExpected,
+          downloadTriggered: false,
+        };
+      }
+
+      await this.page.waitForTimeout(100);
+    }
+
+    const currentUrl = this.page.url();
+    return {
+      ok: false,
+      mode: "unknown",
+      reason: expectedUrl ? "expected_navigation_not_observed" : "navigation_not_observed",
+      currentUrl,
+      expectedUrl,
+      matchedExpected: expectedUrl ? this._urlMatchesExpected(currentUrl, expectedUrl) : currentUrl !== options.beforeUrl,
+      downloadTriggered: options.didDownload(),
+    };
+  }
+
+  private async _executeUiClick(
+    clickTarget: Locator,
+    target: string,
+    details: Record<string, unknown>,
+    beforeObservation: ClickObservation,
+  ): Promise<ActionHandlerResult> {
+    const attempts: Array<{ method: "click" | "force_click"; force: boolean }> = [
+      { method: "click", force: false },
+      { method: "force_click", force: true },
+    ];
+
+    for (const attempt of attempts) {
+      try {
+        await clickTarget.click({
+          timeout: this.defaultTimeout,
+          ...(attempt.force ? { force: true } : {}),
+        });
+      } catch (e) {
+        (details.strategies_tried as unknown[]).push({
+          selector: target,
+          method: attempt.method,
+          error: String(e),
+        });
+        continue;
+      }
+
+      details.click_method = attempt.method;
+      await this.page.waitForTimeout(180);
+      const afterObservation = await this._captureClickObservation(clickTarget);
+      details.after_observation = afterObservation;
+      if (this._didMeaningfulUiChange(beforeObservation, afterObservation)) {
+        return {
+          success: true,
+          message: `Clicked element (${attempt.method}): ${target}`,
+          details,
+        };
+      }
+    }
+
+    details.no_state_change = true;
+    details.error = "no_meaningful_state_change";
+    return {
+      success: false,
+      message: `Error: Click had no meaningful effect for ${target}`,
+      details,
+    };
+  }
+
+  private _didMeaningfulUiChange(before: ClickObservation, after: ClickObservation): boolean {
+    if (before.pageUrl !== after.pageUrl) return true;
+    if (before.targetPresent !== after.targetPresent) return true;
+    if (before.dialogCount !== after.dialogCount) return true;
+    if (before.listboxCount !== after.listboxCount) return true;
+    if (before.menuCount !== after.menuCount) return true;
+    if (before.expandedCount !== after.expandedCount) return true;
+    return JSON.stringify(before.targetState) !== JSON.stringify(after.targetState);
+  }
 
   private _isLikelyLink(diag: ClickElementDiag | null): boolean {
     if (!diag) return false;
