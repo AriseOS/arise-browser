@@ -830,20 +830,9 @@
         const ref = node.ref ? ` [ref=${node.ref}]` : '';
         const hrefSuffix = nodeHref ? ` -> ${nodeHref}` : '';
 
-        // Add cursor=pointer detection following Playwright's implementation
-        // Check both direct cursor and inherited cursor from merged children
-        let cursor = '';
-        const hasDirectCursor = node.element && receivesPointerEvents(node.element) && hasPointerCursor(node.element);
-        const hasInheritedCursor = node.inheritedCursor;
-
-        // Only add cursor=pointer if element is not occluded
-        if ((hasDirectCursor || hasInheritedCursor) && !node.occluded) {
-            cursor = ' [cursor=pointer]';
-        }
-
         const name = (node.name || '').replace(/\s+/g, ' ').trim();
 
-        // Skip elements with empty names and no meaningful props (ref and cursor are not considered meaningful for this check)
+        // Skip elements with empty names and no meaningful props
         if (!name && !meaningfulProps) {
             // If element has no name and no meaningful props, render its children directly at current level
             for (const child of node.children) {
@@ -859,12 +848,13 @@
             return lines;
         }
 
-        lines.push(`${indent}- ${node.role}${name ? ` "${name}"` : ''}${meaningfulProps}${ref}${cursor}${hrefSuffix}`);
+        lines.push(`${indent}- ${node.role}${name ? ` "${name}"` : ''}${meaningfulProps}${ref}${hrefSuffix}`);
 
         for (const child of node.children) {
             if (typeof child === 'string') {
                 const childText = child.replace(/\s+/g, ' ').trim();
-                if (childText) { // Only add non-empty text
+                // Skip text children that are redundant with parent name
+                if (childText && !(name && name.includes(childText))) {
                     lines.push(`${indent}  - text "${childText}"`);
                 }
             } else {

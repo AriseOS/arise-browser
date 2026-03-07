@@ -326,6 +326,29 @@ export class BrowserSession implements SessionRef {
     }
   }
 
+  /**
+   * Try local Chrome first, then Playwright's bundled Chromium.
+   * Avoids requiring `npx playwright install` when Chrome is already installed.
+   */
+  private async _launchStandalone(): Promise<Browser> {
+    const headless = this._config.headless ?? true;
+
+    // Try local Chrome / Edge first
+    for (const channel of ["chrome", "msedge"] as const) {
+      try {
+        const browser = await chromium.launch({ channel, headless });
+        logger.info({ channel }, "Using local browser");
+        return browser;
+      } catch {
+        // Not installed — try next
+      }
+    }
+
+    // Fall back to Playwright's bundled Chromium
+    logger.info("No local Chrome/Edge found — using Playwright Chromium");
+    return chromium.launch({ headless });
+  }
+
   private async _doConnect(): Promise<void> {
     switch (this._config.mode) {
       case "cdp": {
@@ -360,9 +383,7 @@ export class BrowserSession implements SessionRef {
         const ua = this._config.userAgent || getUserAgent();
         const viewport = this._config.viewport || { width: BrowserConfig.viewportWidth, height: BrowserConfig.viewportHeight };
 
-        this._browser = await chromium.launch({
-          headless: this._config.headless ?? true,
-        });
+        this._browser = await this._launchStandalone();
 
         const contextOpts: Record<string, unknown> = {
           userAgent: ua,
