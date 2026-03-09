@@ -54,6 +54,28 @@ const INTERACTIVE_ROLES = new Set([
   "treeitem",
 ]);
 
+const VALUE_ROLES = new Set([
+  "textbox",
+  "searchbox",
+  "combobox",
+  "select",
+  "spinbutton",
+  "slider",
+]);
+
+interface CompactEntry {
+  ref: string;
+  element: SnapshotElement;
+  role: string;
+  dialogLabel: string;
+  widget: string;
+  inViewport: boolean;
+  occluded: boolean;
+  hasValue: boolean;
+  selected: boolean;
+  expanded: boolean;
+}
+
 function extractRoleFromCompactLine(line: string): string | null {
   const trimmed = line.trim();
 
@@ -89,24 +111,160 @@ function parseRefOrder(ref: string): number {
   return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
 }
 
+function isTruthyFlag(value: unknown): boolean {
+  return value === true || value === "true";
+}
+
+function compactAccessibleName(role: string, value: string): string {
+  let compact = normalizeText(value);
+  if (!compact || compact.length < 180 || !["link", "button"].includes(role)) {
+    return compact;
+  }
+
+  if (/\bselect flight\b/i.test(compact) || /\bround trip total\b/i.test(compact)) {
+    compact = compact
+      .replace(/\.\s+/g, " | ")
+      .replace(/\bUS dollars\b/gi, "USD")
+      .replace(/\bround trip total\b/gi, "RT total")
+      .replace(/\bTotal duration\b/gi, "duration")
+      .replace(/\bLayover \(\d+ of \d+\) is a\b/gi, "layover")
+      .replace(/\bSelect flight\b/gi, "")
+      .replace(/\s+\|\s+/g, " | ")
+      .trim();
+  }
+
+  return compact;
+}
+
+function isLowInformationLabel(value: string): boolean {
+  if (!value) return true;
+  if (value.length < 24) return true;
+  if (/^\d{1,2}(?:[$\s].*)?$/.test(value)) return true;
+  return /^(next|previous|done|reset|close|apply|save)$/i.test(value);
+}
+
+function shouldIncludeTag(role: string, tagName: string, displayName: string): boolean {
+  if (!tagName) return false;
+  if (VALUE_ROLES.has(role)) return true;
+  if (role === "link" && tagName !== "a") return true;
+  if (role === "button" && tagName !== "button") return true;
+  return !displayName;
+}
+
+function buildCompactEntries(
+  elements: Record<string, unknown>,
+  interactiveOnly: boolean,
+): CompactEntry[] {
+  return Object.entries(elements)
+    .filter(([, el]) => el && typeof el === "object")
+    .flatMap(([ref, el]) => {
+      const element = el as SnapshotElement;
+      const role = normalizeText(element.role).toLowerCase();
+      if (interactiveOnly && !INTERACTIVE_ROLES.has(role)) {
+        return [];
+      }
+
+      return [{
+        ref,
+        element,
+        role,
+        dialogLabel: normalizeText(element.dialogLabel),
+        widget: normalizeText(element.widget).toLowerCase(),
+        inViewport: !("inViewport" in element) || element.inViewport !== false,
+        occluded: isTruthyFlag(element.occluded),
+        hasValue: normalizeText(element.value).length > 0,
+        selected: isTruthyFlag(element.selected),
+        expanded: element.expanded !== undefined && element.expanded !== null,
+      }];
+    });
+}
+
+function detectDominantOverlay(entries: CompactEntry[]): { dialogLabel?: string; widget?: string } | null {
+  const calendarEntries = entries.filter(
+    (entry) => entry.widget === "calendar" && entry.inViewport,
+  );
+  if (calendarEntries.length >= 3) {
+    const dialogLabel = calendarEntries.find((entry) => entry.dialogLabel)?.dialogLabel;
+    return { widget: "calendar", ...(dialogLabel ? { dialogLabel } : {}) };
+  }
+
+  const dialogCounts = new Map<string, number>();
+  for (const entry of entries) {
+    if (!entry.dialogLabel || !entry.inViewport || entry.occluded) continue;
+    dialogCounts.set(entry.dialogLabel, (dialogCounts.get(entry.dialogLabel) || 0) + 1);
+  }
+
+  let bestLabel = "";
+  let bestCount = 0;
+  for (const [dialogLabel, count] of dialogCounts.entries()) {
+    if (count > bestCount) {
+      bestLabel = dialogLabel;
+      bestCount = count;
+    }
+  }
+
+  if (!bestLabel) return null;
+  return { dialogLabel: bestLabel };
+}
+
+function isOverlayEntry(entry: CompactEntry, overlay: { dialogLabel?: string; widget?: string } | null): boolean {
+  if (!overlay) return false;
+  if (overlay.widget && entry.widget === overlay.widget) return true;
+  if (overlay.dialogLabel && entry.dialogLabel === overlay.dialogLabel) return true;
+  return false;
+}
+
+function shouldKeepEntry(entry: CompactEntry, overlay: { dialogLabel?: string; widget?: string } | null): boolean {
+  if (!overlay) return true;
+  if (isOverlayEntry(entry, overlay)) return true;
+  if (entry.occluded) return false;
+  if (VALUE_ROLES.has(entry.role) && entry.hasValue) return true;
+  return entry.selected || entry.expanded;
+}
+
+function getEntryPriority(entry: CompactEntry, overlay: { dialogLabel?: string; widget?: string } | null): number {
+  let priority = 0;
+  if (isOverlayEntry(entry, overlay)) priority += 5000;
+  if (entry.widget === "calendar") priority += 3000;
+  if (entry.dialogLabel) priority += 1800;
+  if (entry.selected) priority += 900;
+  if (entry.expanded) priority += 800;
+  if (VALUE_ROLES.has(entry.role) && entry.hasValue) priority += 700;
+  if (entry.inViewport) priority += 250;
+  if (!entry.occluded) priority += 120;
+  if (entry.occluded) priority -= 500;
+  if (entry.role === "button") priority += 80;
+  if (entry.role === "textbox" || entry.role === "combobox" || entry.role === "searchbox") {
+    priority += 140;
+  }
+  if (entry.role === "link") priority += 60;
+  return priority;
+}
+
 function buildCompactLine(ref: string, element: SnapshotElement, semanticMode: boolean): string {
   const role = normalizeText(element.role).toLowerCase() || "generic";
-  const accessibleName = normalizeText(element.name);
+  const accessibleNameRaw = normalizeText(element.name);
   const placeholder = normalizeText(element.placeholder);
   const value = normalizeText(element.value);
   const tagName = normalizeText(element.tagName).toLowerCase();
   const href = normalizeText(element.href);
-  const ariaLabel = normalizeText(element.ariaLabel);
+  const ariaLabelRaw = normalizeText(element.ariaLabel);
   const dialogLabel = normalizeText(element.dialogLabel);
   const monthLabel = normalizeText(element.monthLabel);
   const widget = normalizeText(element.widget).toLowerCase();
-  const contextTrail = normalizeTextList(element.contextTrail);
+  const contextTrailRaw = normalizeTextList(element.contextTrail);
 
   const fallbackName =
-    !accessibleName && ["textbox", "searchbox", "combobox"].includes(role)
+    !accessibleNameRaw && ["textbox", "searchbox", "combobox"].includes(role)
       ? placeholder
       : "";
-  const displayName = accessibleName || fallbackName;
+  const displayNameRaw = accessibleNameRaw || fallbackName;
+  const displayName = compactAccessibleName(role, displayNameRaw);
+  const ariaLabel = compactAccessibleName(role, ariaLabelRaw);
+  const lowInfoName = isLowInformationLabel(displayNameRaw || ariaLabelRaw);
+  const contextTrail = contextTrailRaw
+    .filter((item) => item !== displayNameRaw && item !== ariaLabelRaw)
+    .slice(0, lowInfoName ? 2 : 0);
 
   const parts: string[] = [`- ${role}`];
   if (displayName) {
@@ -140,14 +298,7 @@ function buildCompactLine(ref: string, element: SnapshotElement, semanticMode: b
     parts.push("[cursor=pointer]");
   }
 
-  if (
-    tagName &&
-    (tagName !== role ||
-      !displayName ||
-      role === "combobox" ||
-      role === "textbox" ||
-      role === "searchbox")
-  ) {
+  if (shouldIncludeTag(role, tagName, displayNameRaw)) {
     parts.push(`[tag=${tagName}]`);
   }
 
@@ -168,7 +319,12 @@ function buildCompactLine(ref: string, element: SnapshotElement, semanticMode: b
     parts.push(`-> ${href}`);
   }
 
-  if (semanticMode && ariaLabel && ariaLabel !== displayName) {
+  if (
+    semanticMode &&
+    ariaLabel &&
+    ariaLabelRaw !== displayNameRaw &&
+    (lowInfoName || VALUE_ROLES.has(role) || role === "tab")
+  ) {
     parts.push(`[aria="${escapeCompactText(ariaLabel)}"]`);
   }
   if (semanticMode && widget) {
@@ -192,22 +348,21 @@ function buildCompactSnapshotFromElements(
   interactiveOnly: boolean,
   semanticMode: boolean,
 ): string {
-  const lines = Object.entries(elements)
-    .filter(([, el]) => el && typeof el === "object")
-    .sort(([refA], [refB]) => {
-      const orderA = parseRefOrder(refA);
-      const orderB = parseRefOrder(refB);
+  const entries = buildCompactEntries(elements, interactiveOnly);
+  const overlay = semanticMode ? detectDominantOverlay(entries) : null;
+  const lines = entries
+    .filter((entry) => shouldKeepEntry(entry, overlay))
+    .sort((entryA, entryB) => {
+      const priorityA = getEntryPriority(entryA, overlay);
+      const priorityB = getEntryPriority(entryB, overlay);
+      if (priorityA !== priorityB) return priorityB - priorityA;
+
+      const orderA = parseRefOrder(entryA.ref);
+      const orderB = parseRefOrder(entryB.ref);
       if (orderA !== orderB) return orderA - orderB;
-      return refA.localeCompare(refB);
+      return entryA.ref.localeCompare(entryB.ref);
     })
-    .flatMap(([ref, el]) => {
-      const element = el as SnapshotElement;
-      const role = normalizeText(element.role).toLowerCase();
-      if (interactiveOnly && !INTERACTIVE_ROLES.has(role)) {
-        return [];
-      }
-      return [buildCompactLine(ref, element, semanticMode)];
-    });
+    .map((entry) => buildCompactLine(entry.ref, entry.element, semanticMode));
 
   return lines.join("\n");
 }

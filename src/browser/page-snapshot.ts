@@ -195,7 +195,16 @@ export class PageSnapshot {
 
     while (retries > 0) {
       try {
-        return await this.page.evaluate(jsCode, viewportLimit);
+        return await this.page.evaluate(
+          ({ analyzerSource, viewportLimit: viewportLimitEnabled }) => {
+            const analyzer = new Function(`return ${analyzerSource}`)();
+            if (typeof analyzer !== "function") {
+              throw new Error("Snapshot analyzer did not evaluate to a function");
+            }
+            return analyzer(viewportLimitEnabled);
+          },
+          { analyzerSource: jsCode, viewportLimit },
+        );
       } catch (e: unknown) {
         const msg = e instanceof Error ? e.message : String(e);
         const navErr = "Execution context was destroyed";

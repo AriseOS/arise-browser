@@ -100,6 +100,17 @@ interface ClickObservationDelta {
   pageSemanticChanged: boolean;
 }
 
+interface CalendarObservation {
+  open: boolean;
+  dialogCount: number;
+  activeElement: string;
+  activeField: string;
+  visibleMonths: string[];
+  formValues: string[];
+  selectedDates: string[];
+  summary: string;
+}
+
 interface ActionHandlerResult {
   success: boolean;
   message: string;
@@ -107,7 +118,7 @@ interface ActionHandlerResult {
 }
 
 type ClickIntent = "auto" | "same_tab" | "new_tab" | "ui";
-type ClickExpectedEffect = "any" | "focus" | "ui_change" | "navigation";
+type ClickExpectedEffect = "any" | "focus" | "ui_change" | "navigation" | "calendar_change";
 
 interface RecoveryMarker {
   attr: string;
@@ -995,7 +1006,7 @@ export class ActionExecutor {
 
   private _normalizeClickExpectedEffect(effect: unknown): ClickExpectedEffect {
     const raw = typeof effect === "string" ? effect.trim().toLowerCase() : "";
-    if (raw === "focus" || raw === "ui_change" || raw === "navigation") {
+    if (raw === "focus" || raw === "ui_change" || raw === "navigation" || raw === "calendar_change") {
       return raw;
     }
     return "any";
@@ -1704,6 +1715,15 @@ export class ActionExecutor {
     beforeObservation: ClickObservation,
     expectedEffect: ClickExpectedEffect,
   ): Promise<ActionHandlerResult> {
+    if (expectedEffect === "calendar_change") {
+      return await this._executeCalendarClick(
+        clickTarget,
+        target,
+        details,
+        beforeObservation,
+      );
+    }
+
     const attempts: Array<{ method: "click" | "force_click"; force: boolean }> = [
       { method: "click", force: false },
       { method: "force_click", force: true },
@@ -1789,6 +1809,287 @@ export class ActionExecutor {
           : `Error: Click did not satisfy expected effect '${expectedEffect}' for ${target}`,
       details,
     };
+  }
+
+  private async _executeCalendarClick(
+    clickTarget: Locator,
+    target: string,
+    details: Record<string, unknown>,
+    beforeObservation: ClickObservation,
+  ): Promise<ActionHandlerResult> {
+    const attempts: Array<{ method: "click" | "force_click"; force: boolean }> = [
+      { method: "click", force: false },
+      { method: "force_click", force: true },
+    ];
+    const targetKind = this._classifyCalendarTarget(beforeObservation.targetState);
+    const beforeCalendarObservation = await this._captureCalendarObservation();
+    details.before_calendar_observation = beforeCalendarObservation;
+    details.calendar_target_kind = targetKind;
+
+    for (const attempt of attempts) {
+      try {
+        await clickTarget.click({
+          timeout: this.defaultTimeout,
+          ...(attempt.force ? { force: true } : {}),
+        });
+      } catch (e) {
+        (details.strategies_tried as unknown[]).push({
+          selector: target,
+          method: attempt.method,
+          error: String(e),
+        });
+        continue;
+      }
+
+      details.click_method = attempt.method;
+      let afterCalendarObservation = beforeCalendarObservation;
+      for (let i = 0; i < 6; i += 1) {
+        await this.page.waitForTimeout(i === 0 ? 120 : 100);
+        afterCalendarObservation = await this._captureCalendarObservation();
+        const evaluation = this._evaluateCalendarObservationChange(
+          targetKind,
+          beforeCalendarObservation,
+          afterCalendarObservation,
+        );
+        details.after_calendar_observation = afterCalendarObservation;
+        details.calendar_effect_satisfied = evaluation.satisfied;
+        details.calendar_effect_reason = evaluation.reason;
+        if (evaluation.satisfied) {
+          if (evaluation.focusOnly) {
+            details.focus_only_change = true;
+            details.warning = "focus_only_change";
+            return {
+              success: true,
+              message: this._formatFocusOnlyClickMessage(attempt.method, target),
+              details,
+            };
+          }
+          return {
+            success: true,
+            message: `Clicked element (${attempt.method}): ${target}`,
+            details,
+          };
+        }
+      }
+    }
+
+    details.no_state_change = true;
+    details.error = "calendar_effect_not_observed";
+    details.expected_effect_failure = "calendar_effect_not_observed";
+    return {
+      success: false,
+      message: `Error: Click did not satisfy expected effect 'calendar_change' for ${target}`,
+      details,
+    };
+  }
+
+  private _classifyCalendarTarget(
+    state: ClickTargetState | null,
+  ): "field" | "next" | "previous" | "done" | "date" | "other" {
+    if (!state) return "other";
+    const combined = `${state.ariaLabel || ""} ${state.text || ""} ${state.value || ""}`
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+    if (/^next\b/.test(combined)) return "next";
+    if (/^previous\b/.test(combined)) return "previous";
+    if (/^done\b/.test(combined)) return "done";
+    if (
+      (state.role === "textbox" || state.role === "combobox" || !!state.value) &&
+      /\b(departure|return)\b/.test(combined)
+    ) {
+      return "field";
+    }
+    const text = (state.text || "").trim();
+    if (/^\d{1,2}(?:\b|[^0-9])/.test(text) || /^\d{1,2}(?:\b|[^0-9])/.test(combined)) {
+      return "date";
+    }
+    return "other";
+  }
+
+  private async _captureCalendarObservation(): Promise<CalendarObservation> {
+    const script = String.raw`(() => {
+      function normalize(value) {
+        return String(value ?? "").replace(/\s+/g, " ").trim();
+      }
+
+      function isVisible(el) {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === "none" || style.visibility === "hidden" || style.opacity === "0") {
+          return false;
+        }
+        const rect = el.getBoundingClientRect();
+        return (
+          rect.width > 0 &&
+          rect.height > 0 &&
+          rect.bottom >= 0 &&
+          rect.right >= 0 &&
+          rect.top <= window.innerHeight &&
+          rect.left <= window.innerWidth
+        );
+      }
+
+      function readText(el) {
+        if (!el) return "";
+        return normalize(el.innerText || el.textContent || "");
+      }
+
+      function readAttr(el, name) {
+        if (!el || typeof el.getAttribute !== "function") return "";
+        return normalize(el.getAttribute(name) || "");
+      }
+
+      function collectVisibleDialogs() {
+        const dialogs = [];
+        const nodes = document.querySelectorAll("[role='dialog'], [aria-modal='true'], dialog");
+        for (let i = 0; i < nodes.length; i += 1) {
+          const el = nodes[i];
+          if (isVisible(el)) dialogs.push(el);
+        }
+        return dialogs;
+      }
+
+      function detectActiveField(active) {
+        const activeText = normalize(
+          readAttr(active, "aria-label") + " " + readAttr(active, "placeholder") + " " + readText(active),
+        ).toLowerCase();
+        if (/\bdeparture\b/.test(activeText)) return "departure";
+        if (/\breturn\b/.test(activeText)) return "return";
+        return "";
+      }
+
+      const visibleDialogs = collectVisibleDialogs();
+      const root = visibleDialogs.length > 0 ? visibleDialogs[0] : document.body;
+      const active = document.activeElement instanceof Element ? document.activeElement : null;
+      const activeField = detectActiveField(active);
+      const monthRe =
+        /\b(January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b/i;
+      const visibleMonths = [];
+      const seenMonths = new Set();
+      const monthNodes = root.querySelectorAll("h1, h2, h3, h4, h5, h6, [role='heading'], div, span");
+      for (let i = 0; i < monthNodes.length; i += 1) {
+        const el = monthNodes[i];
+        if (!isVisible(el)) continue;
+        const match = readText(el).match(monthRe);
+        if (!match) continue;
+        const label = normalize(match[0]);
+        if (!label || seenMonths.has(label)) continue;
+        seenMonths.add(label);
+        visibleMonths.push(label);
+        if (visibleMonths.length >= 6) break;
+      }
+
+      const formValues = [];
+      const seenValues = new Set();
+      const formNodes = document.querySelectorAll(
+        "input, textarea, select, [role='combobox'], [role='textbox']",
+      );
+      for (let i = 0; i < formNodes.length; i += 1) {
+        const el = formNodes[i];
+        if (!isVisible(el)) continue;
+        const label = normalize(
+          readAttr(el, "aria-label") + " " + readAttr(el, "placeholder") + " " + readAttr(el, "name"),
+        );
+        if (!/\b(departure|return)\b/.test(label.toLowerCase())) continue;
+        const value = normalize((typeof el.value === "string" ? el.value : "") || readText(el));
+        const token = (label || el.tagName.toLowerCase()) + "=" + value;
+        if (!value || seenValues.has(token)) continue;
+        seenValues.add(token);
+        formValues.push(token);
+      }
+
+      const selectedDates = [];
+      const seenSelected = new Set();
+      const selectedNodes = root.querySelectorAll(
+        "[aria-selected='true'], [aria-pressed='true'], [aria-current='date'], [aria-current='true']",
+      );
+      for (let i = 0; i < selectedNodes.length; i += 1) {
+        const el = selectedNodes[i];
+        if (!isVisible(el)) continue;
+        const token = normalize(readAttr(el, "aria-label") + " " + readText(el));
+        if (!token || seenSelected.has(token)) continue;
+        seenSelected.add(token);
+        selectedDates.push(token);
+        if (selectedDates.length >= 10) break;
+      }
+
+      let summary = "";
+      const controlNodes = root.querySelectorAll("button, [role='button']");
+      for (let i = 0; i < controlNodes.length; i += 1) {
+        const el = controlNodes[i];
+        if (!isVisible(el)) continue;
+        const label = normalize(readAttr(el, "aria-label") || readText(el));
+        if (/^done\b/i.test(label)) {
+          summary = label.slice(0, 220);
+          break;
+        }
+      }
+
+      const activeTag = active?.tagName?.toLowerCase() || "";
+      const activeId = active?.id || "";
+      const activeRole = readAttr(active, "role");
+      const activeRef = readAttr(active, "aria-ref");
+      return {
+        open: visibleDialogs.length > 0,
+        dialogCount: visibleDialogs.length,
+        activeElement: activeTag + "#" + activeId + "[role=" + activeRole + "][ref=" + activeRef + "]",
+        activeField,
+        visibleMonths,
+        formValues,
+        selectedDates,
+        summary,
+      };
+    })()`;
+    return await this.page.evaluate(script);
+  }
+
+  private _evaluateCalendarObservationChange(
+    targetKind: "field" | "next" | "previous" | "done" | "date" | "other",
+    before: CalendarObservation,
+    after: CalendarObservation,
+  ): { satisfied: boolean; focusOnly: boolean; reason: string } {
+    const activeChanged = before.activeElement !== after.activeElement || before.activeField !== after.activeField;
+    const monthsChanged = JSON.stringify(before.visibleMonths) !== JSON.stringify(after.visibleMonths);
+    const valuesChanged = JSON.stringify(before.formValues) !== JSON.stringify(after.formValues);
+    const selectedChanged = JSON.stringify(before.selectedDates) !== JSON.stringify(after.selectedDates);
+    const summaryChanged = before.summary !== after.summary;
+    const dialogChanged = before.dialogCount !== after.dialogCount || before.open !== after.open;
+
+    if (targetKind === "field") {
+      if (valuesChanged || selectedChanged || summaryChanged) {
+        return { satisfied: true, focusOnly: false, reason: "calendar_field_state_changed" };
+      }
+      if (activeChanged) {
+        return { satisfied: true, focusOnly: true, reason: "calendar_field_focus_changed" };
+      }
+      return { satisfied: false, focusOnly: false, reason: "calendar_field_no_change" };
+    }
+    if (targetKind === "next" || targetKind === "previous") {
+      if (monthsChanged || valuesChanged || summaryChanged || selectedChanged) {
+        return { satisfied: true, focusOnly: false, reason: "calendar_navigation_changed" };
+      }
+      return { satisfied: false, focusOnly: false, reason: "calendar_navigation_no_change" };
+    }
+    if (targetKind === "done") {
+      if (dialogChanged || !after.open) {
+        return { satisfied: true, focusOnly: false, reason: "calendar_dialog_closed" };
+      }
+      return { satisfied: false, focusOnly: false, reason: "calendar_done_no_change" };
+    }
+    if (targetKind === "date") {
+      if (valuesChanged || selectedChanged || summaryChanged || activeChanged) {
+        return { satisfied: true, focusOnly: false, reason: "calendar_date_changed" };
+      }
+      return { satisfied: false, focusOnly: false, reason: "calendar_date_no_change" };
+    }
+    if (monthsChanged || valuesChanged || selectedChanged || summaryChanged || dialogChanged) {
+      return { satisfied: true, focusOnly: false, reason: "calendar_state_changed" };
+    }
+    if (activeChanged) {
+      return { satisfied: true, focusOnly: true, reason: "calendar_focus_changed" };
+    }
+    return { satisfied: false, focusOnly: false, reason: "calendar_no_change" };
   }
 
   private _didMeaningfulUiChange(before: ClickObservation, after: ClickObservation): boolean {

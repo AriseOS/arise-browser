@@ -181,6 +181,201 @@ test("arise-browser regressions", async (t) => {
     assert.match(text, /\[dialog="Choose dates"\]/i);
   });
 
+  await t.test("viewport-limited semantic snapshot drops below-fold interactive elements", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for viewport-limited snapshot regression");
+
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body style="margin: 0">
+          <button type="button">Visible action</button>
+          <div style="height: 2200px"></div>
+          <button type="button">Below fold action</button>
+        </body>
+      </html>
+    `);
+
+    const semanticResponse = await fetch(
+      `${baseUrl}/snapshot?format=compact&filter=interactive&semantic=true`,
+    );
+    const semanticText = await semanticResponse.text();
+
+    const viewportResponse = await fetch(
+      `${baseUrl}/snapshot?format=compact&filter=interactive&semantic=true&viewportLimit=true`,
+    );
+    const viewportText = await viewportResponse.text();
+
+    assert.equal(semanticResponse.status, 200);
+    assert.equal(viewportResponse.status, 200);
+    assert.match(semanticText, /Visible action/);
+    assert.match(semanticText, /Below fold action/);
+    assert.match(semanticText, /\[viewport=off\]/i);
+    assert.match(viewportText, /Visible action/);
+    assert.doesNotMatch(viewportText, /Below fold action/);
+    assert.doesNotMatch(viewportText, /\[viewport=off\]/i);
+  });
+
+  await t.test("calendar_change click succeeds for month navigation buttons", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for calendar navigation action regression");
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <div role="dialog" aria-label="Choose dates">
+            <div>
+              <h2 id="month-label">July 2026</h2>
+              <button
+                type="button"
+                aria-ref="e1"
+                aria-label="Next"
+                onclick="
+                  document.getElementById('month-label').textContent = 'August 2026';
+                  document.getElementById('selected-day').setAttribute('aria-selected', 'true');
+                "
+              >
+                Next
+              </button>
+              <div role="grid">
+                <button type="button" id="selected-day" aria-ref="e2">9</button>
+              </div>
+            </div>
+          </div>
+        </body>
+      </html>
+    `);
+
+    const { response, data } = await postJson("/action", {
+      kind: "click",
+      ref: "e1",
+      clickIntent: "ui",
+      expectedEffect: "calendar_change",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(data.success, true);
+    assert.match(String(data.message), /Clicked element/i);
+    assert.equal(data.details?.calendar_effect_reason, "calendar_navigation_changed");
+  });
+
+  await t.test("calendar_change click succeeds when Done closes the calendar dialog", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for calendar done action regression");
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <div role="dialog" aria-label="Choose dates" id="calendar-dialog">
+            <h2>September 2026</h2>
+            <button
+              type="button"
+              aria-ref="e3"
+              aria-label="Done. Search for round trip flights, departing on September 9, 2026 and returning on September 13, 2026"
+              onclick="document.getElementById('calendar-dialog').remove()"
+            >
+              Done
+            </button>
+          </div>
+        </body>
+      </html>
+    `);
+
+    const { response, data } = await postJson("/action", {
+      kind: "click",
+      ref: "e3",
+      clickIntent: "ui",
+      expectedEffect: "calendar_change",
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(data.success, true);
+    assert.equal(data.details?.calendar_effect_reason, "calendar_dialog_closed");
+  });
+
+  await t.test("semantic compact snapshot prioritizes calendar dialog and drops occluded background actions", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for modal snapshot regression");
+
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body style="margin: 0">
+          <button
+            type="button"
+            style="position: absolute; top: 16px; left: 16px; width: 180px; height: 44px;"
+          >
+            Background action
+          </button>
+          <div
+            role="dialog"
+            aria-label="Choose dates"
+            style="position: fixed; inset: 0; background: rgba(0, 0, 0, 0.35);"
+          >
+            <section style="margin: 40px; padding: 24px; background: white;">
+              <h2>September 2026</h2>
+              <div role="grid">
+                <button type="button" aria-selected="true">9</button>
+                <button type="button">13</button>
+              </div>
+              <button type="button">Done</button>
+            </section>
+          </div>
+        </body>
+      </html>
+    `);
+
+    const response = await fetch(
+      `${baseUrl}/snapshot?format=compact&filter=interactive&semantic=true`,
+    );
+    const text = await response.text();
+    const [firstLine = ""] = text.split("\n");
+
+    assert.equal(response.status, 200);
+    assert.match(firstLine, /\[widget=calendar\]/i);
+    assert.match(text, /September 2026/i);
+    assert.doesNotMatch(text, /Background action/i);
+  });
+
+  await t.test("semantic compact snapshot compresses verbose flight-style labels without losing key facts", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for compact label regression");
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <section aria-label="Search results">
+            <a href="https://example.com/flight">
+              From 6510 US dollars round trip total. 1 stop flight with United.
+              Leaves Hong Kong International Airport at 9:45 PM on Tuesday, June 9
+              and arrives at Orlando International Airport at 7:03 AM on Wednesday, June 10.
+              Total duration 21 hr 18 min.
+              Layover (1 of 1) is a 2 hr 44 min layover at Los Angeles International Airport in Los Angeles.
+              Select flight
+            </a>
+          </section>
+        </body>
+      </html>
+    `);
+
+    const response = await fetch(
+      `${baseUrl}/snapshot?format=compact&filter=interactive&semantic=true`,
+    );
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(text, /6510 USD/i);
+    assert.match(text, /RT total/i);
+    assert.match(text, /duration 21 hr 18 min/i);
+    assert.doesNotMatch(text, /Select flight/i);
+    assert.doesNotMatch(text, /\[context=/i);
+  });
+
   await t.test("evaluate optionally returns captured console without breaking default shape", async () => {
     const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
     assert.ok(page, "expected a page for evaluate regression");

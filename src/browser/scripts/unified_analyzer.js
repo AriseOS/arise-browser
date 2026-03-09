@@ -91,6 +91,7 @@
             // Clear cached analysis results
             delete window.__camelLastAnalysisResult;
             delete window.__camelLastAnalysisTime;
+            delete window.__camelLastAnalysisViewportLimit;
         } catch (error) {
             console.warn('CAMEL: Error clearing refs:', error);
         }
@@ -1237,9 +1238,15 @@
         const currentTime = Date.now();
         const lastAnalysisTime = window.__camelLastAnalysisTime || 0;
         const timeSinceLastAnalysis = currentTime - lastAnalysisTime;
+        const lastAnalysisViewportLimit = window.__camelLastAnalysisViewportLimit === true;
 
         // If less than 1 second since last analysis and page hasn't changed significantly
-        if (timeSinceLastAnalysis < 1000 && window.__camelLastAnalysisResult && cleanedRefCount === 0) {
+        if (
+            timeSinceLastAnalysis < 1000
+            && window.__camelLastAnalysisResult
+            && cleanedRefCount === 0
+            && lastAnalysisViewportLimit === viewport_limit
+        ) {
             const cachedResult = window.__camelLastAnalysisResult;
             // Update timestamp and memory info in cached result
             cachedResult.metadata.timestamp = new Date().toISOString();
@@ -1372,6 +1379,7 @@
                 // Performance information
                 cacheHit: false,
                 analysisTime: Date.now() - currentTime,
+                viewportLimitEnabled: viewport_limit,
                 refDebug: _refDebug
             }
         };
@@ -1385,10 +1393,11 @@
         // Cache the result for potential reuse
         window.__camelLastAnalysisResult = result;
         window.__camelLastAnalysisTime = currentTime;
+        window.__camelLastAnalysisViewportLimit = viewport_limit;
 
         return result;
     }
 
     // Execute analysis and return result
     return analyzePageElements();
-})();
+})
