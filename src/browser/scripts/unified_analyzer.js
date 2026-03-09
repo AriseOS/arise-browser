@@ -534,6 +534,56 @@
         return text;
         }
 
+    const STRONG_SEMANTIC_ROLES = new Set([
+        'button', 'link', 'checkbox', 'radio', 'switch', 'tab', 'option',
+        'textbox', 'searchbox', 'combobox', 'select', 'spinbutton', 'slider',
+        'menuitem', 'menuitemcheckbox', 'menuitemradio', 'treeitem',
+        'dialog', 'listbox'
+    ]);
+
+    const ACTIONABLE_TAGS = new Set(['button', 'a', 'input', 'select', 'textarea', 'summary']);
+
+    function getNodeSemanticPriority(node) {
+        if (!node || typeof node === 'string') return 0;
+
+        const role = (node.role || '').toLowerCase();
+        const tagName = node.element?.tagName?.toLowerCase?.() || '';
+
+        if (STRONG_SEMANTIC_ROLES.has(role) || ACTIONABLE_TAGS.has(tagName)) {
+            return 3;
+        }
+
+        if (role && role !== 'generic') {
+            return 2;
+        }
+
+        return 1;
+    }
+
+    function shouldPreserveSameNameChild(parent, child) {
+        if (!parent || !child || typeof child === 'string') return false;
+
+        const parentName = (parent.name || '').trim();
+        const childName = (child.name || '').trim();
+        if (!parentName || !childName || parentName !== childName) {
+            return false;
+        }
+
+        const parentPriority = getNodeSemanticPriority(parent);
+        const childPriority = getNodeSemanticPriority(child);
+        if (childPriority > parentPriority) {
+            return true;
+        }
+
+        const parentRole = (parent.role || '').toLowerCase();
+        const childRole = (child.role || '').toLowerCase();
+        if (parentRole === 'generic' && STRONG_SEMANTIC_ROLES.has(childRole)) {
+            return true;
+        }
+
+        return false;
+    }
+
     const textCache = new Map();
     function getVisibleTextContent(_node) {
         // Check if node is null or doesn't have nodeType
@@ -741,7 +791,7 @@
             if (typeof child !== 'string' && child.name && node.name) {
                 const childName = child.name.trim();
                 const parentName = node.name.trim();
-                if (childName === parentName) {
+                if (childName === parentName && !shouldPreserveSameNameChild(node, child)) {
                     // If child has same name as parent, merge its children into parent
                     filteredChildren.push(...(child.children || []));
 
@@ -771,7 +821,12 @@
         // Also handle the case where we have only one child with same name
         if (node.children.length === 1 && typeof node.children[0] !== 'string') {
             const child = node.children[0];
-            if (child.name && node.name && child.name.trim() === node.name.trim()) {
+            if (
+                child.name &&
+                node.name &&
+                child.name.trim() === node.name.trim() &&
+                !shouldPreserveSameNameChild(node, child)
+            ) {
                 // Inherit cursor=pointer from the child being merged
                 if (child.element && receivesPointerEvents(child.element) && hasPointerCursor(child.element)) {
                     node.inheritedCursor = true;

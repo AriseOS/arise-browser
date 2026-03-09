@@ -7,6 +7,7 @@ interface EvaluateBody {
   code?: string; // Pinchtab-compatible alias for expression
   tabId?: string;
   owner?: string;
+  captureConsole?: boolean;
 }
 
 export function registerEvaluateRoute(app: FastifyInstance) {
@@ -14,7 +15,7 @@ export function registerEvaluateRoute(app: FastifyInstance) {
     const session = (app as any).session as BrowserSession;
     const body = request.body || {} as EvaluateBody;
     const expression = body.expression || body.code;
-    const { tabId, owner } = body;
+    const { tabId, owner, captureConsole } = body;
 
     if (!expression) {
       return reply.code(400).send({ error: "expression (or code) is required" });
@@ -26,8 +27,11 @@ export function registerEvaluateRoute(app: FastifyInstance) {
         return sendTabLocked(reply, conflict);
       }
 
-      const result = await session.evaluate(expression, tabId);
-      return { result };
+      const evaluation = await session.evaluateDetailed(expression, tabId, { captureConsole });
+      if (captureConsole) {
+        return evaluation;
+      }
+      return { result: evaluation.result };
     } catch (e) {
       return sendRouteError(reply, e, "Evaluation failed");
     }

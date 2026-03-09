@@ -126,4 +126,117 @@ test("arise-browser regressions", async (t) => {
       "expected navigate operation for new-tab navigation",
     );
   });
+
+  await t.test("interactive snapshot preserves semantic button under same-name generic wrapper", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for snapshot regression");
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <div aria-label="Add adult">
+            <button type="button" aria-label="Add adult">+</button>
+          </div>
+        </body>
+      </html>
+    `);
+
+    const response = await fetch(`${baseUrl}/snapshot?format=compact&filter=interactive`);
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(text, /button "Add adult"/i);
+  });
+
+  await t.test("evaluate optionally returns captured console without breaking default shape", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for evaluate regression");
+    await page.setContent("<!doctype html><html><body>evaluate</body></html>");
+
+    const captured = await postJson("/evaluate", {
+      expression: 'console.log("hello", 42); return 7;',
+      captureConsole: true,
+    });
+    assert.equal(captured.response.status, 200);
+    assert.equal(captured.data.result, 7);
+    assert.ok(Array.isArray(captured.data.console));
+    assert.deepEqual(captured.data.console[0], { type: "log", text: "hello 42" });
+
+    const plain = await postJson("/evaluate", { expression: "3 + 4" });
+    assert.equal(plain.response.status, 200);
+    assert.equal(plain.data.result, 7);
+    assert.equal("console" in plain.data, false);
+  });
+
+  await t.test("type falls back to keyboard for comboboxes that reject fill semantics", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for type regression");
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <input
+            id="combo"
+            aria-ref="e1"
+            role="combobox"
+            aria-autocomplete="list"
+            autocomplete="off"
+          />
+          <script>
+            const input = document.getElementById("combo");
+            let fromKeyboard = false;
+            input.addEventListener("keydown", () => {
+              fromKeyboard = true;
+            });
+            input.addEventListener("input", () => {
+              if (!fromKeyboard && input.value) {
+                input.value = "";
+              }
+              fromKeyboard = false;
+            });
+          </script>
+        </body>
+      </html>
+    `);
+
+    const typed = await postJson("/action", {
+      kind: "type",
+      ref: "e1",
+      text: "MCO",
+    });
+    assert.equal(typed.response.status, 200);
+    assert.equal(typed.data.success, true);
+    assert.equal(typed.data.details?.strategy, "keyboard_type");
+
+    const value = await postJson("/evaluate", {
+      expression: 'document.getElementById("combo").value',
+    });
+    assert.equal(value.response.status, 200);
+    assert.equal(value.data.result, "MCO");
+  });
+
+  await t.test("click reports focus-only change separately from meaningful ui changes", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for click regression");
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <input id="focus-only" aria-ref="e9" type="text" />
+        </body>
+      </html>
+    `);
+
+    const clicked = await postJson("/action", {
+      kind: "click",
+      ref: "e9",
+    });
+    assert.equal(clicked.response.status, 200);
+    assert.equal(clicked.data.success, true);
+    assert.equal(clicked.data.details?.warning, "focus_only_change");
+    assert.match(String(clicked.data.message), /focus changed only/i);
+  });
 });

@@ -61,6 +61,83 @@ function getEvaluationFallback(expression: string, error: unknown): { source: st
   return null;
 }
 
+interface EvaluationConsoleEntry {
+  type: string;
+  text: string;
+}
+
+interface EvaluationDetailedResult {
+  result: unknown;
+  console: EvaluationConsoleEntry[];
+}
+
+function buildCapturedEvaluationSource(expression: string): string {
+  const source = expression.trim();
+  const setup = `
+const __capture = [];
+const __truncate = (value, max = 280) => value.length > max ? value.slice(0, max - 3) + "..." : value;
+const __serialize = (value) => {
+  if (typeof value === "string") return __truncate(value);
+  if (value instanceof Error) return __truncate(value.stack || value.message || String(value));
+  try {
+    const json = JSON.stringify(value);
+    if (typeof json === "string") return __truncate(json);
+  } catch {}
+  return __truncate(String(value));
+};
+const __record = (type, args) => {
+  if (__capture.length >= 50) return;
+  __capture.push({
+    type,
+    text: __truncate(args.map((arg) => __serialize(arg)).join(" "), 500),
+  });
+};
+const __origConsole = {
+  log: console.log,
+  info: console.info,
+  warn: console.warn,
+  error: console.error,
+  debug: console.debug,
+};
+for (const __key of Object.keys(__origConsole)) {
+  console[__key] = (...args) => {
+    __record(__key, args);
+  };
+}
+`;
+
+  const teardown = `
+for (const __key of Object.keys(__origConsole)) {
+  console[__key] = __origConsole[__key];
+}
+`;
+
+  if (isLikelySingleExpression(source)) {
+    const expr = source.replace(/;$/, "");
+    return `(async () => {
+${setup}
+  try {
+    const __result = (${expr});
+    return { result: await __result, console: __capture };
+  } finally {
+${teardown}
+  }
+})()`;
+  }
+
+  return `(async () => {
+${setup}
+  try {
+    const __result = await (async () => {
+${source}
+    })();
+    return { result: __result, console: __capture };
+  } finally {
+${teardown}
+  }
+})()`;
+}
+
 // ===== Tab Group =====
 
 const TAB_GROUP_COLORS = ["blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
@@ -840,13 +917,29 @@ export class BrowserSession implements SessionRef {
   // ===== Evaluate =====
 
   async evaluate(expression: string, tabId?: string): Promise<unknown> {
+    const detailed = await this.evaluateDetailed(expression, tabId);
+    return detailed.result;
+  }
+
+  async evaluateDetailed(
+    expression: string,
+    tabId?: string,
+    options?: { captureConsole?: boolean },
+  ): Promise<EvaluationDetailedResult> {
     const page = await this.getPageForTab(tabId);
     if (!page || page.isClosed()) {
       throw new Error("No active page");
     }
 
+    if (options?.captureConsole) {
+      const wrappedSource = buildCapturedEvaluationSource(expression);
+      const result = await page.evaluate(wrappedSource);
+      return result as EvaluationDetailedResult;
+    }
+
     try {
-      return await page.evaluate(expression);
+      const result = await page.evaluate(expression);
+      return { result, console: [] };
     } catch (error) {
       const fallback = getEvaluationFallback(expression, error);
       if (!fallback) {
@@ -854,7 +947,8 @@ export class BrowserSession implements SessionRef {
       }
 
       logger.debug({ mode: fallback.mode }, "Retrying evaluation with wrapped function body");
-      return page.evaluate(fallback.source);
+      const result = await page.evaluate(fallback.source);
+      return { result, console: [] };
     }
   }
 

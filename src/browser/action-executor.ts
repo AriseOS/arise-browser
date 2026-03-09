@@ -35,6 +35,20 @@ interface SelectState {
   ariaValueText: string;
 }
 
+interface TypeState {
+  tagName: string;
+  role: string;
+  type: string;
+  value: string;
+  text: string;
+  ariaAutocomplete: string | null;
+  ariaExpanded: string | null;
+  placeholder: string;
+  active: boolean;
+  listboxCount: number;
+  optionCount: number;
+}
+
 interface ClickElementDiag {
   tag: string;
   href: string | null;
@@ -68,6 +82,12 @@ interface ClickObservation {
   listboxCount: number;
   menuCount: number;
   expandedCount: number;
+}
+
+interface ClickObservationDelta {
+  changed: boolean;
+  meaningful: boolean;
+  focusOnly: boolean;
 }
 
 interface ActionHandlerResult {
@@ -391,10 +411,91 @@ export class ActionExecutor {
 
     const target = `[aria-ref='${escapeRef(ref)}']`;
     const details: Record<string, unknown> = { ref, target, text, text_length: text.length };
+    const control = this.page.locator(target).first();
 
     try {
-      await this.page.fill(target, text, { timeout: this.shortTimeout });
-      return { success: true, message: `Typed '${text}' into ${target}`, details };
+      const count = await control.count();
+      if (count === 0) {
+        details.error = "element_not_found";
+        return { success: false, message: "Error: type failed, element not found", details };
+      }
+
+      const beforeState = await this._readTypeState(control);
+      details.before_state = beforeState;
+
+      const preferKeyboard = this._shouldPreferKeyboardTyping(beforeState);
+      details.prefer_keyboard = preferKeyboard;
+
+      const strategies: Array<"fill" | "keyboard_type"> = preferKeyboard
+        ? ["keyboard_type", "fill"]
+        : ["fill", "keyboard_type"];
+
+      for (const strategy of strategies) {
+        if (strategy === "fill") {
+          try {
+            await control.fill(text, { timeout: this.shortTimeout });
+          } catch (exc) {
+            details.fill_error = String(exc);
+            continue;
+          }
+        } else {
+          try {
+            try {
+              await control.click({ timeout: this.shortTimeout });
+              details.keyboard_focus_method = "click";
+            } catch {
+              await control.focus();
+              details.keyboard_focus_method = "focus";
+            }
+
+            try {
+              await control.press("ControlOrMeta+A", { timeout: this.shortTimeout });
+            } catch {
+              try {
+                await control.press("Control+A", { timeout: this.shortTimeout });
+              } catch {
+                // Best-effort select-all; continue with backspace/delete fallback.
+              }
+            }
+            try {
+              await control.press("Backspace", { timeout: this.shortTimeout });
+            } catch {
+              // Best effort.
+            }
+            try {
+              await control.press("Delete", { timeout: this.shortTimeout });
+            } catch {
+              // Best effort.
+            }
+
+            await this.page.keyboard.type(text, { delay: 45 });
+          } catch (exc) {
+            details.keyboard_type_error = String(exc);
+            continue;
+          }
+        }
+
+        await this.page.waitForTimeout(180);
+        const afterState = await this._readTypeState(control);
+        details[`${strategy}_after_state`] = afterState;
+
+        const verified = this._typeStateMatchesExpected(afterState, text);
+        details[`${strategy}_verified`] = verified;
+
+        if (verified) {
+          details.strategy = strategy;
+          return { success: true, message: `Typed '${text}' into ${target}`, details };
+        }
+      }
+
+      const finalState = await this._readTypeState(control);
+      details.after_state = finalState;
+      details.error = "value_not_verified";
+      return {
+        success: false,
+        message: `Type failed: could not verify text '${text}' in ${target}`,
+        details,
+      };
     } catch (exc) {
       details.error = String(exc);
       return { success: false, message: `Type failed: ${exc}`, details };
@@ -1221,13 +1322,25 @@ export class ActionExecutor {
     await this.page.waitForTimeout(180);
     const afterObservation = await this._captureClickObservation(clickTarget);
     details.after_observation = afterObservation;
+    const observationDelta = this._getClickObservationDelta(beforeObservation, afterObservation);
+    details.observation_delta = observationDelta;
 
-    if (!this._didClickObservationChange(beforeObservation, afterObservation)) {
+    if (!observationDelta.changed) {
       details.no_state_change = true;
       details.warning = "no_state_change";
       return {
         success: true,
         message: `Clicked element (${details.click_method}): ${target} (no observable page state change)`,
+        details,
+      };
+    }
+
+    if (observationDelta.focusOnly) {
+      details.focus_only_change = true;
+      details.warning = "focus_only_change";
+      return {
+        success: true,
+        message: this._formatFocusOnlyClickMessage(String(details.click_method || "click"), target),
         details,
       };
     }
@@ -1565,10 +1678,21 @@ export class ActionExecutor {
       await this.page.waitForTimeout(180);
       const afterObservation = await this._captureClickObservation(clickTarget);
       details.after_observation = afterObservation;
-      if (this._didMeaningfulUiChange(beforeObservation, afterObservation)) {
+      const observationDelta = this._getClickObservationDelta(beforeObservation, afterObservation);
+      details.observation_delta = observationDelta;
+      if (observationDelta.meaningful) {
         return {
           success: true,
           message: `Clicked element (${attempt.method}): ${target}`,
+          details,
+        };
+      }
+      if (observationDelta.focusOnly) {
+        details.focus_only_change = true;
+        details.warning = "focus_only_change";
+        return {
+          success: true,
+          message: this._formatFocusOnlyClickMessage(attempt.method, target),
           details,
         };
       }
@@ -1584,13 +1708,7 @@ export class ActionExecutor {
   }
 
   private _didMeaningfulUiChange(before: ClickObservation, after: ClickObservation): boolean {
-    if (before.pageUrl !== after.pageUrl) return true;
-    if (before.targetPresent !== after.targetPresent) return true;
-    if (before.dialogCount !== after.dialogCount) return true;
-    if (before.listboxCount !== after.listboxCount) return true;
-    if (before.menuCount !== after.menuCount) return true;
-    if (before.expandedCount !== after.expandedCount) return true;
-    return JSON.stringify(before.targetState) !== JSON.stringify(after.targetState);
+    return this._getClickObservationDelta(before, after).meaningful;
   }
 
   private _isLikelyLink(diag: ClickElementDiag | null): boolean {
@@ -1618,14 +1736,12 @@ export class ActionExecutor {
       const activeRef = active?.getAttribute?.("aria-ref") || "";
       const activeSig = `${activeTag}#${activeId}[role=${activeRole}][ref=${activeRef}]`;
 
-      const count = (selector: string) => document.querySelectorAll(selector).length;
-
       return {
         activeElement: activeSig,
-        dialogCount: count("[role='dialog'], [aria-modal='true']"),
-        listboxCount: count("[role='listbox']"),
-        menuCount: count("[role='menu'], [role='menuitem'], [role='menuitemradio']"),
-        expandedCount: count("[aria-expanded='true']"),
+        dialogCount: document.querySelectorAll("[role='dialog'], [aria-modal='true']").length,
+        listboxCount: document.querySelectorAll("[role='listbox']").length,
+        menuCount: document.querySelectorAll("[role='menu'], [role='menuitem'], [role='menuitemradio']").length,
+        expandedCount: document.querySelectorAll("[aria-expanded='true']").length,
       };
     });
 
@@ -1669,16 +1785,87 @@ export class ActionExecutor {
   }
 
   private _didClickObservationChange(before: ClickObservation, after: ClickObservation): boolean {
-    if (before.pageUrl !== after.pageUrl) return true;
-    if (before.activeElement !== after.activeElement) return true;
-    if (before.targetPresent !== after.targetPresent) return true;
+    return this._getClickObservationDelta(before, after).changed;
+  }
 
-    if (before.dialogCount !== after.dialogCount) return true;
-    if (before.listboxCount !== after.listboxCount) return true;
-    if (before.menuCount !== after.menuCount) return true;
-    if (before.expandedCount !== after.expandedCount) return true;
+  private _getClickObservationDelta(
+    before: ClickObservation,
+    after: ClickObservation,
+  ): ClickObservationDelta {
+    const activeChanged = before.activeElement !== after.activeElement;
+    const meaningful =
+      before.pageUrl !== after.pageUrl ||
+      before.targetPresent !== after.targetPresent ||
+      before.dialogCount !== after.dialogCount ||
+      before.listboxCount !== after.listboxCount ||
+      before.menuCount !== after.menuCount ||
+      before.expandedCount !== after.expandedCount ||
+      JSON.stringify(before.targetState) !== JSON.stringify(after.targetState);
 
-    return JSON.stringify(before.targetState) !== JSON.stringify(after.targetState);
+    return {
+      changed: meaningful || activeChanged,
+      meaningful,
+      focusOnly: !meaningful && activeChanged,
+    };
+  }
+
+  private _formatFocusOnlyClickMessage(method: string, target: string): string {
+    return `Clicked element (${method}): ${target} (focus changed only; no dialog/listbox/menu/url change observed)`;
+  }
+
+  private async _readTypeState(control: Locator): Promise<TypeState> {
+    return await control.evaluate((node: Element) => {
+      const el = node as HTMLElement;
+      const inputLike = node as HTMLInputElement;
+      return {
+        tagName: node.tagName.toLowerCase(),
+        role: node.getAttribute("role") || "",
+        type: inputLike.type || "",
+        value: inputLike.value || "",
+        text: (el.innerText || node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 200),
+        ariaAutocomplete: node.getAttribute("aria-autocomplete"),
+        ariaExpanded: node.getAttribute("aria-expanded"),
+        placeholder: inputLike.placeholder || "",
+        active: document.activeElement === node,
+        listboxCount: document.querySelectorAll("[role='listbox']").length,
+        optionCount: document.querySelectorAll("[role='option']").length,
+      };
+    });
+  }
+
+  private _shouldPreferKeyboardTyping(state: TypeState): boolean {
+    const role = state.role.toLowerCase();
+    const type = state.type.toLowerCase();
+    return (
+      role === "combobox" ||
+      role === "searchbox" ||
+      type === "search" ||
+      !!state.ariaAutocomplete
+    );
+  }
+
+  private _typeStateMatchesExpected(state: TypeState, expected: string): boolean {
+    const normalizedExpected = this._normalizeTypeToken(expected);
+    const normalizedValue = this._normalizeTypeToken(state.value);
+    const normalizedText = this._normalizeTypeToken(state.text);
+
+    if (!normalizedExpected) {
+      return normalizedValue.length === 0 && normalizedText.length === 0;
+    }
+
+    if (normalizedValue === normalizedExpected) return true;
+    if (normalizedText === normalizedExpected) return true;
+
+    if (this._shouldPreferKeyboardTyping(state)) {
+      if (normalizedValue && normalizedExpected.includes(normalizedValue)) return true;
+      if (normalizedValue && normalizedValue.includes(normalizedExpected)) return true;
+    }
+
+    return false;
+  }
+
+  private _normalizeTypeToken(value: string | null | undefined): string {
+    return (value || "").replace(/\s+/g, " ").trim().toLowerCase();
   }
 
   private _normalizeSelectToken(value: string | null | undefined): string {
