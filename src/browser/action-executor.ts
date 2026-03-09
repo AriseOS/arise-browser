@@ -64,12 +64,15 @@ interface ClickElementDiag {
 
 interface ClickTargetState {
   role: string;
+  ariaLabel: string;
   ariaExpanded: string | null;
   ariaSelected: string | null;
   ariaPressed: string | null;
+  ariaCurrent: string | null;
   value: string;
   checked: boolean | null;
   text: string;
+  disabled: boolean;
   className: string;
 }
 
@@ -82,12 +85,19 @@ interface ClickObservation {
   listboxCount: number;
   menuCount: number;
   expandedCount: number;
+  dialogLabels: string[];
+  headingTexts: string[];
+  formValues: string[];
+  selectedStateTokens: string[];
 }
 
 interface ClickObservationDelta {
   changed: boolean;
   meaningful: boolean;
   focusOnly: boolean;
+  urlChanged: boolean;
+  targetChanged: boolean;
+  pageSemanticChanged: boolean;
 }
 
 interface ActionHandlerResult {
@@ -97,6 +107,7 @@ interface ActionHandlerResult {
 }
 
 type ClickIntent = "auto" | "same_tab" | "new_tab" | "ui";
+type ClickExpectedEffect = "any" | "focus" | "ui_change" | "navigation";
 
 interface RecoveryMarker {
   attr: string;
@@ -205,6 +216,7 @@ export class ActionExecutor {
     const ref = action.ref as string | undefined;
     const selector = action.selector as string | undefined;
     const requestedIntent = this._normalizeClickIntent(action.clickIntent);
+    const requestedExpectedEffect = this._normalizeClickExpectedEffect(action.expectedEffect);
     const requestedExpectedHref =
       typeof action.expectedHref === "string" && action.expectedHref.trim()
         ? action.expectedHref.trim()
@@ -227,6 +239,7 @@ export class ActionExecutor {
       click_method: null,
       new_tab_created: false,
       click_intent_requested: requestedIntent,
+      expected_effect_requested: requestedExpectedEffect,
       expected_href: requestedExpectedHref,
       expected_text: requestedExpectedText,
     };
@@ -370,7 +383,14 @@ export class ActionExecutor {
       details.expected_href = resolvedExpectedHref;
 
       if (clickIntent === "auto") {
-        return await this._executeAutoClick(clickTarget, target, details, isLikelyLink, beforeObservation);
+        return await this._executeAutoClick(
+          clickTarget,
+          target,
+          details,
+          isLikelyLink,
+          beforeObservation,
+          requestedExpectedEffect,
+        );
       }
 
       if (clickIntent === "new_tab" && this.session) {
@@ -391,7 +411,13 @@ export class ActionExecutor {
         );
       }
 
-      return await this._executeUiClick(clickTarget, target, details, beforeObservation);
+      return await this._executeUiClick(
+        clickTarget,
+        target,
+        details,
+        beforeObservation,
+        requestedExpectedEffect,
+      );
     } finally {
       if (cleanupMarker) {
         await this._clearRecoveryMarker(cleanupMarker);
@@ -967,6 +993,14 @@ export class ActionExecutor {
     return "auto";
   }
 
+  private _normalizeClickExpectedEffect(effect: unknown): ClickExpectedEffect {
+    const raw = typeof effect === "string" ? effect.trim().toLowerCase() : "";
+    if (raw === "focus" || raw === "ui_change" || raw === "navigation") {
+      return raw;
+    }
+    return "any";
+  }
+
   private _deriveClickIntent(
     requestedIntent: ClickIntent,
     isLikelyLink: boolean,
@@ -1230,6 +1264,7 @@ export class ActionExecutor {
     details: Record<string, unknown>,
     isLikelyLink: boolean,
     beforeObservation: ClickObservation,
+    expectedEffect: ClickExpectedEffect,
   ): Promise<ActionHandlerResult> {
     let clickPerformed = false;
 
@@ -1324,8 +1359,12 @@ export class ActionExecutor {
     details.after_observation = afterObservation;
     const observationDelta = this._getClickObservationDelta(beforeObservation, afterObservation);
     details.observation_delta = observationDelta;
+    details.expected_effect = expectedEffect;
 
-    if (!observationDelta.changed) {
+    const effectEvaluation = this._evaluateObservedClickEffect(expectedEffect, observationDelta);
+    details.effect_satisfied = effectEvaluation.satisfied;
+
+    if (effectEvaluation.satisfied && !observationDelta.changed) {
       details.no_state_change = true;
       details.warning = "no_state_change";
       return {
@@ -1335,12 +1374,22 @@ export class ActionExecutor {
       };
     }
 
-    if (observationDelta.focusOnly) {
+    if (effectEvaluation.satisfied && observationDelta.focusOnly) {
       details.focus_only_change = true;
       details.warning = "focus_only_change";
       return {
         success: true,
         message: this._formatFocusOnlyClickMessage(String(details.click_method || "click"), target),
+        details,
+      };
+    }
+
+    if (!effectEvaluation.satisfied) {
+      details.error = effectEvaluation.errorCode;
+      details.expected_effect_failure = effectEvaluation.errorCode;
+      return {
+        success: false,
+        message: effectEvaluation.message || `Error: Click did not satisfy expected effect for ${target}`,
         details,
       };
     }
@@ -1653,6 +1702,7 @@ export class ActionExecutor {
     target: string,
     details: Record<string, unknown>,
     beforeObservation: ClickObservation,
+    expectedEffect: ClickExpectedEffect,
   ): Promise<ActionHandlerResult> {
     const attempts: Array<{ method: "click" | "force_click"; force: boolean }> = [
       { method: "click", force: false },
@@ -1680,29 +1730,63 @@ export class ActionExecutor {
       details.after_observation = afterObservation;
       const observationDelta = this._getClickObservationDelta(beforeObservation, afterObservation);
       details.observation_delta = observationDelta;
-      if (observationDelta.meaningful) {
+      details.expected_effect = expectedEffect;
+      if (expectedEffect === "any") {
+        details.effect_satisfied = observationDelta.meaningful || observationDelta.focusOnly;
+        if (observationDelta.meaningful) {
+          return {
+            success: true,
+            message: `Clicked element (${attempt.method}): ${target}`,
+            details,
+          };
+        }
+        if (observationDelta.focusOnly) {
+          details.focus_only_change = true;
+          details.warning = "focus_only_change";
+          return {
+            success: true,
+            message: this._formatFocusOnlyClickMessage(attempt.method, target),
+            details,
+          };
+        }
+        continue;
+      }
+
+      const effectEvaluation = this._evaluateObservedClickEffect(expectedEffect, observationDelta);
+      details.effect_satisfied = effectEvaluation.satisfied;
+      if (effectEvaluation.satisfied) {
+        if (observationDelta.focusOnly) {
+          details.focus_only_change = true;
+          details.warning = "focus_only_change";
+          return {
+            success: true,
+            message: this._formatFocusOnlyClickMessage(attempt.method, target),
+            details,
+          };
+        }
         return {
           success: true,
           message: `Clicked element (${attempt.method}): ${target}`,
           details,
         };
       }
-      if (observationDelta.focusOnly) {
-        details.focus_only_change = true;
-        details.warning = "focus_only_change";
-        return {
-          success: true,
-          message: this._formatFocusOnlyClickMessage(attempt.method, target),
-          details,
-        };
-      }
     }
 
     details.no_state_change = true;
-    details.error = "no_meaningful_state_change";
+    details.error =
+      expectedEffect === "ui_change"
+        ? "ui_effect_not_observed"
+        : expectedEffect === "navigation"
+          ? "navigation_effect_not_observed"
+          : expectedEffect === "focus"
+            ? "focus_effect_not_observed"
+            : "no_meaningful_state_change";
     return {
       success: false,
-      message: `Error: Click had no meaningful effect for ${target}`,
+      message:
+        expectedEffect === "any"
+          ? `Error: Click had no meaningful effect for ${target}`
+          : `Error: Click did not satisfy expected effect '${expectedEffect}' for ${target}`,
       details,
     };
   }
@@ -1736,12 +1820,155 @@ export class ActionExecutor {
       const activeRef = active?.getAttribute?.("aria-ref") || "";
       const activeSig = `${activeTag}#${activeId}[role=${activeRole}][ref=${activeRef}]`;
 
+      const dialogLabels: string[] = [];
+      const seenDialogLabels = new Set<string>();
+      for (const element of Array.from(document.querySelectorAll("[role='dialog'], [aria-modal='true']"))) {
+        const htmlElement = element as HTMLElement;
+        const style = window.getComputedStyle(htmlElement);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        const rect = htmlElement.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        if (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
+
+        let label = (element.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().slice(0, 180);
+        if (!label) {
+          const labelledBy = (element.getAttribute("aria-labelledby") || "").trim();
+          if (labelledBy) {
+            const parts: string[] = [];
+            for (const id of labelledBy.split(/\s+/)) {
+              const labelledNode = document.getElementById(id);
+              const text = (labelledNode?.innerText || labelledNode?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 180);
+              if (text) parts.push(text);
+            }
+            label = parts.join(" ").replace(/\s+/g, " ").trim().slice(0, 180);
+          }
+        }
+        if (!label) {
+          const heading = element.querySelector("h1, h2, h3, h4, h5, h6, [role='heading']");
+          label = ((heading as HTMLElement | null)?.innerText || heading?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 180);
+        }
+        if (!label || seenDialogLabels.has(label)) continue;
+        seenDialogLabels.add(label);
+        dialogLabels.push(label);
+        if (dialogLabels.length >= 6) break;
+      }
+
+      const headingTexts: string[] = [];
+      const seenHeadingTexts = new Set<string>();
+      for (const element of Array.from(document.querySelectorAll("h1, h2, h3, h4, h5, h6, [role='heading']"))) {
+        const htmlElement = element as HTMLElement;
+        const style = window.getComputedStyle(htmlElement);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        const rect = htmlElement.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        if (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
+
+        const text = (htmlElement.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 180);
+        if (!text || seenHeadingTexts.has(text)) continue;
+        seenHeadingTexts.add(text);
+        headingTexts.push(text);
+        if (headingTexts.length >= 8) break;
+      }
+
+      const formValues: string[] = [];
+      const seenFormValues = new Set<string>();
+      for (const element of Array.from(document.querySelectorAll("input, textarea, select, [role='combobox'], [role='textbox']"))) {
+        const htmlElement = element as HTMLElement;
+        const style = window.getComputedStyle(htmlElement);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        const rect = htmlElement.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        if (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
+
+        const inputLike = element as HTMLInputElement;
+        let label = (element.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().slice(0, 180);
+        if (!label) {
+          const labelledBy = (element.getAttribute("aria-labelledby") || "").trim();
+          if (labelledBy) {
+            const parts: string[] = [];
+            for (const id of labelledBy.split(/\s+/)) {
+              const labelledNode = document.getElementById(id);
+              const text = (labelledNode?.innerText || labelledNode?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 180);
+              if (text) parts.push(text);
+            }
+            label = parts.join(" ").replace(/\s+/g, " ").trim().slice(0, 180);
+          }
+        }
+        if (!label) {
+          const labelNode = element.closest("label");
+          label = ((labelNode as HTMLElement | null)?.innerText || labelNode?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 180);
+        }
+        if (!label) {
+          label = (
+            element.getAttribute("name")
+            || element.getAttribute("placeholder")
+            || htmlElement.id
+            || element.tagName.toLowerCase()
+          ).replace(/\s+/g, " ").trim().slice(0, 180);
+        }
+
+        const value = (inputLike.value || htmlElement.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 180);
+        if (!value) continue;
+        const token = `${label}=${value}`.replace(/\s+/g, " ").trim().slice(0, 220);
+        if (!token || seenFormValues.has(token)) continue;
+        seenFormValues.add(token);
+        formValues.push(token);
+        if (formValues.length >= 8) break;
+      }
+
+      const selectedStateTokens: string[] = [];
+      const seenSelectedStateTokens = new Set<string>();
+      for (const element of Array.from(document.querySelectorAll("[aria-selected='true'], [aria-pressed='true'], [aria-current], [aria-checked='true']"))) {
+        const htmlElement = element as HTMLElement;
+        const style = window.getComputedStyle(htmlElement);
+        if (style.display === "none" || style.visibility === "hidden") continue;
+        const rect = htmlElement.getBoundingClientRect();
+        if (rect.width <= 0 || rect.height <= 0) continue;
+        if (rect.bottom < 0 || rect.right < 0 || rect.top > window.innerHeight || rect.left > window.innerWidth) continue;
+
+        let label = (element.getAttribute("aria-label") || "").replace(/\s+/g, " ").trim().slice(0, 180);
+        if (!label) {
+          const labelledBy = (element.getAttribute("aria-labelledby") || "").trim();
+          if (labelledBy) {
+            const parts: string[] = [];
+            for (const id of labelledBy.split(/\s+/)) {
+              const labelledNode = document.getElementById(id);
+              const text = (labelledNode?.innerText || labelledNode?.textContent || "").replace(/\s+/g, " ").trim().slice(0, 180);
+              if (text) parts.push(text);
+            }
+            label = parts.join(" ").replace(/\s+/g, " ").trim().slice(0, 180);
+          }
+        }
+        if (!label) {
+          label = (htmlElement.innerText || element.textContent || "").replace(/\s+/g, " ").trim().slice(0, 180);
+        }
+
+        const states = [
+          element.getAttribute("aria-selected") === "true" ? "selected" : "",
+          element.getAttribute("aria-pressed") === "true" ? "pressed" : "",
+          element.getAttribute("aria-current") ? `current=${(element.getAttribute("aria-current") || "").replace(/\s+/g, " ").trim().slice(0, 60)}` : "",
+          element.getAttribute("aria-checked") === "true" ? "checked" : "",
+        ].filter(Boolean).join(",");
+        const token = `${(element.getAttribute("role") || "").replace(/\s+/g, " ").trim().slice(0, 60)}:${label}:${states}`
+          .replace(/\s+/g, " ")
+          .trim()
+          .slice(0, 220);
+        if (!token || seenSelectedStateTokens.has(token)) continue;
+        seenSelectedStateTokens.add(token);
+        selectedStateTokens.push(token);
+        if (selectedStateTokens.length >= 10) break;
+      }
+
       return {
         activeElement: activeSig,
         dialogCount: document.querySelectorAll("[role='dialog'], [aria-modal='true']").length,
         listboxCount: document.querySelectorAll("[role='listbox']").length,
         menuCount: document.querySelectorAll("[role='menu'], [role='menuitem'], [role='menuitemradio']").length,
         expandedCount: document.querySelectorAll("[aria-expanded='true']").length,
+        dialogLabels,
+        headingTexts,
+        formValues,
+        selectedStateTokens,
       };
     });
 
@@ -1755,14 +1982,27 @@ export class ActionExecutor {
         targetState = await target.evaluate((node: Element) => {
           const el = node as HTMLElement;
           const inputLike = node as HTMLInputElement;
+          const labelledBy = (node.getAttribute("aria-labelledby") || "")
+            .split(/\s+/)
+            .map((id) => document.getElementById(id))
+            .filter((item): item is HTMLElement => !!item)
+            .map((item) => (item.innerText || item.textContent || "").replace(/\s+/g, " ").trim())
+            .filter(Boolean)
+            .join(" ");
           return {
             role: node.getAttribute("role") || "",
+            ariaLabel:
+              node.getAttribute("aria-label")
+              || labelledBy
+              || "",
             ariaExpanded: node.getAttribute("aria-expanded"),
             ariaSelected: node.getAttribute("aria-selected"),
             ariaPressed: node.getAttribute("aria-pressed"),
+            ariaCurrent: node.getAttribute("aria-current"),
             value: inputLike.value || "",
             checked: typeof inputLike.checked === "boolean" ? inputLike.checked : null,
             text: (el.innerText || node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 200),
+            disabled: inputLike.disabled || node.getAttribute("aria-disabled") === "true",
             className: (el.className || "").toString().slice(0, 200),
           };
         });
@@ -1781,6 +2021,10 @@ export class ActionExecutor {
       listboxCount: pageState.listboxCount,
       menuCount: pageState.menuCount,
       expandedCount: pageState.expandedCount,
+      dialogLabels: pageState.dialogLabels,
+      headingTexts: pageState.headingTexts,
+      formValues: pageState.formValues,
+      selectedStateTokens: pageState.selectedStateTokens,
     };
   }
 
@@ -1788,24 +2032,95 @@ export class ActionExecutor {
     return this._getClickObservationDelta(before, after).changed;
   }
 
+  private _toMeaningfulClickTargetState(state: ClickTargetState | null): Record<string, unknown> | null {
+    if (!state) return null;
+    return {
+      role: state.role,
+      ariaLabel: state.ariaLabel,
+      ariaExpanded: state.ariaExpanded,
+      ariaSelected: state.ariaSelected,
+      ariaPressed: state.ariaPressed,
+      ariaCurrent: state.ariaCurrent,
+      value: state.value,
+      checked: state.checked,
+      text: state.text,
+      disabled: state.disabled,
+    };
+  }
+
+  private _toSemanticPageVector(observation: ClickObservation): Record<string, unknown> {
+    return {
+      pageUrl: observation.pageUrl,
+      targetPresent: observation.targetPresent,
+      dialogCount: observation.dialogCount,
+      listboxCount: observation.listboxCount,
+      menuCount: observation.menuCount,
+      expandedCount: observation.expandedCount,
+      dialogLabels: observation.dialogLabels,
+      headingTexts: observation.headingTexts,
+      formValues: observation.formValues,
+      selectedStateTokens: observation.selectedStateTokens,
+    };
+  }
+
+  private _evaluateObservedClickEffect(
+    expectedEffect: ClickExpectedEffect,
+    observationDelta: ClickObservationDelta,
+  ): { satisfied: boolean; errorCode?: string; message?: string } {
+    if (expectedEffect === "any") {
+      return { satisfied: true };
+    }
+
+    if (expectedEffect === "focus") {
+      return observationDelta.changed
+        ? { satisfied: true }
+        : {
+            satisfied: false,
+            errorCode: "focus_effect_not_observed",
+            message: "Error: Click did not move focus or change page state",
+          };
+    }
+
+    if (expectedEffect === "navigation") {
+      return observationDelta.urlChanged
+        ? { satisfied: true }
+        : {
+            satisfied: false,
+            errorCode: "navigation_effect_not_observed",
+            message: "Error: Click did not trigger navigation",
+          };
+    }
+
+    return observationDelta.meaningful
+      ? { satisfied: true }
+      : {
+          satisfied: false,
+          errorCode: "ui_effect_not_observed",
+          message: "Error: Click did not cause a meaningful UI change",
+        };
+  }
+
   private _getClickObservationDelta(
     before: ClickObservation,
     after: ClickObservation,
   ): ClickObservationDelta {
     const activeChanged = before.activeElement !== after.activeElement;
-    const meaningful =
-      before.pageUrl !== after.pageUrl ||
-      before.targetPresent !== after.targetPresent ||
-      before.dialogCount !== after.dialogCount ||
-      before.listboxCount !== after.listboxCount ||
-      before.menuCount !== after.menuCount ||
-      before.expandedCount !== after.expandedCount ||
-      JSON.stringify(before.targetState) !== JSON.stringify(after.targetState);
+    const urlChanged = before.pageUrl !== after.pageUrl;
+    const targetChanged =
+      JSON.stringify(this._toMeaningfulClickTargetState(before.targetState))
+      !== JSON.stringify(this._toMeaningfulClickTargetState(after.targetState));
+    const pageSemanticChanged =
+      JSON.stringify(this._toSemanticPageVector(before))
+      !== JSON.stringify(this._toSemanticPageVector(after));
+    const meaningful = urlChanged || targetChanged || pageSemanticChanged;
 
     return {
       changed: meaningful || activeChanged,
       meaningful,
       focusOnly: !meaningful && activeChanged,
+      urlChanged,
+      targetChanged,
+      pageSemanticChanged,
     };
   }
 

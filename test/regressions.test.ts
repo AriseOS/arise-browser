@@ -149,6 +149,38 @@ test("arise-browser regressions", async (t) => {
     assert.match(text, /button "Add adult"/i);
   });
 
+  await t.test("semantic compact snapshot preserves calendar context for date buttons", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for semantic snapshot regression");
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <div role="dialog" aria-label="Choose dates">
+            <section>
+              <h2>November 2026</h2>
+              <div role="grid">
+                <button type="button" aria-ref="e1" aria-selected="true">26</button>
+              </div>
+            </section>
+          </div>
+        </body>
+      </html>
+    `);
+
+    const response = await fetch(
+      `${baseUrl}/snapshot?format=compact&filter=interactive&semantic=true`,
+    );
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(text, /\[selected\]/i);
+    assert.match(text, /\[widget=calendar\]/i);
+    assert.match(text, /\[month="November 2026"\]/i);
+    assert.match(text, /\[dialog="Choose dates"\]/i);
+  });
+
   await t.test("evaluate optionally returns captured console without breaking default shape", async () => {
     const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
     assert.ok(page, "expected a page for evaluate regression");
@@ -238,5 +270,58 @@ test("arise-browser regressions", async (t) => {
     assert.equal(clicked.data.success, true);
     assert.equal(clicked.data.details?.warning, "focus_only_change");
     assert.match(String(clicked.data.message), /focus changed only/i);
+  });
+
+  await t.test("strict ui click rejects focus-only changes", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for strict click regression");
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <input id="focus-only-strict" aria-ref="e19" type="text" />
+        </body>
+      </html>
+    `);
+
+    const clicked = await postJson("/action", {
+      kind: "click",
+      ref: "e19",
+      expectedEffect: "ui_change",
+    });
+    assert.equal(clicked.response.status, 200);
+    assert.equal(clicked.data.success, false);
+    assert.equal(clicked.data.details?.error, "ui_effect_not_observed");
+  });
+
+  await t.test("strict ui click accepts semantic page updates", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for strict semantic click regression");
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <h2 id="month">March 2026</h2>
+          <button
+            type="button"
+            aria-ref="e21"
+            onclick="document.getElementById('month').textContent = 'April 2026';"
+          >
+            Next
+          </button>
+        </body>
+      </html>
+    `);
+
+    const clicked = await postJson("/action", {
+      kind: "click",
+      ref: "e21",
+      expectedEffect: "ui_change",
+    });
+    assert.equal(clicked.response.status, 200);
+    assert.equal(clicked.data.success, true);
+    assert.equal(clicked.data.details?.effect_satisfied, true);
   });
 });

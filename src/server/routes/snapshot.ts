@@ -7,6 +7,7 @@ interface SnapshotQuery {
   format?: "yaml" | "json" | "compact" | "text";
   diff?: string;
   viewportLimit?: string;
+  semantic?: string;
   filter?: "interactive" | "all";
 }
 
@@ -17,10 +18,18 @@ interface SnapshotElement {
   disabled?: unknown;
   checked?: unknown;
   expanded?: unknown;
+  selected?: unknown;
   level?: unknown;
   href?: unknown;
   value?: unknown;
   placeholder?: unknown;
+  ariaLabel?: unknown;
+  dialogLabel?: unknown;
+  monthLabel?: unknown;
+  widget?: unknown;
+  contextTrail?: unknown;
+  inViewport?: unknown;
+  occluded?: unknown;
   receivesPointerEvents?: unknown;
   hasPointerCursor?: unknown;
 }
@@ -68,18 +77,30 @@ function escapeCompactText(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
 }
 
+function normalizeTextList(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => normalizeText(item))
+    .filter(Boolean);
+}
+
 function parseRefOrder(ref: string): number {
   const match = ref.match(/^e(\d+)$/i);
   return match ? Number(match[1]) : Number.POSITIVE_INFINITY;
 }
 
-function buildCompactLine(ref: string, element: SnapshotElement): string {
+function buildCompactLine(ref: string, element: SnapshotElement, semanticMode: boolean): string {
   const role = normalizeText(element.role).toLowerCase() || "generic";
   const accessibleName = normalizeText(element.name);
   const placeholder = normalizeText(element.placeholder);
   const value = normalizeText(element.value);
   const tagName = normalizeText(element.tagName).toLowerCase();
   const href = normalizeText(element.href);
+  const ariaLabel = normalizeText(element.ariaLabel);
+  const dialogLabel = normalizeText(element.dialogLabel);
+  const monthLabel = normalizeText(element.monthLabel);
+  const widget = normalizeText(element.widget).toLowerCase();
+  const contextTrail = normalizeTextList(element.contextTrail);
 
   const fallbackName =
     !accessibleName && ["textbox", "searchbox", "combobox"].includes(role)
@@ -99,6 +120,9 @@ function buildCompactLine(ref: string, element: SnapshotElement): string {
   if (element.expanded !== undefined && element.expanded !== null) {
     parts.push(`expanded=${String(element.expanded)}`);
   }
+  if (semanticMode && element.selected === true) parts.push("[selected]");
+  if (semanticMode && element.occluded === true) parts.push("[occluded]");
+  if (semanticMode && element.inViewport === false) parts.push("[viewport=off]");
 
   const level =
     typeof element.level === "number"
@@ -144,12 +168,29 @@ function buildCompactLine(ref: string, element: SnapshotElement): string {
     parts.push(`-> ${href}`);
   }
 
+  if (semanticMode && ariaLabel && ariaLabel !== displayName) {
+    parts.push(`[aria="${escapeCompactText(ariaLabel)}"]`);
+  }
+  if (semanticMode && widget) {
+    parts.push(`[widget=${widget}]`);
+  }
+  if (semanticMode && monthLabel) {
+    parts.push(`[month="${escapeCompactText(monthLabel)}"]`);
+  }
+  if (semanticMode && dialogLabel) {
+    parts.push(`[dialog="${escapeCompactText(dialogLabel)}"]`);
+  }
+  if (semanticMode && contextTrail.length > 0) {
+    parts.push(`[context="${escapeCompactText(contextTrail.join(" | "))}"]`);
+  }
+
   return parts.join(" ");
 }
 
 function buildCompactSnapshotFromElements(
   elements: Record<string, unknown>,
   interactiveOnly: boolean,
+  semanticMode: boolean,
 ): string {
   const lines = Object.entries(elements)
     .filter(([, el]) => el && typeof el === "object")
@@ -165,7 +206,7 @@ function buildCompactSnapshotFromElements(
       if (interactiveOnly && !INTERACTIVE_ROLES.has(role)) {
         return [];
       }
-      return [buildCompactLine(ref, element)];
+      return [buildCompactLine(ref, element, semanticMode)];
     });
 
   return lines.join("\n");
@@ -178,6 +219,7 @@ export function registerSnapshotRoute(app: FastifyInstance) {
 
     const diffOnly = diff === "true" || diff === "1";
     const vpLimit = viewportLimit === "true" || viewportLimit === "1";
+    const semanticMode = request.query.semantic === "true" || request.query.semantic === "1";
     const interactiveOnly = filter === "interactive";
 
     try {
@@ -186,7 +228,11 @@ export function registerSnapshotRoute(app: FastifyInstance) {
         const elements = result.elements as Record<string, unknown>;
 
         if (format === "compact") {
-          const compactText = buildCompactSnapshotFromElements(elements, interactiveOnly);
+          const compactText = buildCompactSnapshotFromElements(
+            elements,
+            interactiveOnly,
+            semanticMode,
+          );
           if (compactText) {
             return reply.type("text/plain").send(compactText);
           }

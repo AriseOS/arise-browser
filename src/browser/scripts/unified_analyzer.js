@@ -999,6 +999,162 @@
         return validRects;
     }
 
+    const MONTH_LABEL_RE = /\b(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{4}\b/i;
+    const INTERACTIVE_CONTEXT_ROLES = new Set([
+        'link',
+        'button',
+        'textbox',
+        'checkbox',
+        'radio',
+        'combobox',
+        'select',
+        'menuitem',
+        'tab',
+        'switch',
+        'slider',
+        'spinbutton',
+        'searchbox',
+        'option',
+        'menuitemcheckbox',
+        'menuitemradio',
+        'treeitem'
+    ]);
+
+    function normalizeInlineText(value, maxLength = 160) {
+        if (typeof value !== 'string') return '';
+        return value.replace(/\s+/g, ' ').trim().slice(0, maxLength);
+    }
+
+    function getLabelledByText(element) {
+        const labelledBy = element.getAttribute('aria-labelledby');
+        if (!labelledBy) return '';
+
+        const labels = labelledBy
+            .split(/\s+/)
+            .map(id => document.getElementById(id))
+            .filter(Boolean)
+            .map(node => normalizeInlineText(node.innerText || node.textContent || ''))
+            .filter(Boolean);
+
+        return normalizeInlineText(labels.join(' '));
+    }
+
+    function getElementAriaLabel(element) {
+        return normalizeInlineText(
+            element.getAttribute('aria-label')
+            || getLabelledByText(element)
+            || ''
+        );
+    }
+
+    function getElementHeadingText(element) {
+        const heading = element.querySelector('h1, h2, h3, h4, h5, h6, [role="heading"]');
+        if (!heading) return '';
+        return normalizeInlineText(heading.innerText || heading.textContent || '');
+    }
+
+    function getElementContextLabel(element) {
+        const ariaLabel = getElementAriaLabel(element);
+        if (ariaLabel) return ariaLabel;
+
+        const headingText = getElementHeadingText(element);
+        if (headingText) return headingText;
+
+        const legend = element.querySelector('legend');
+        if (legend) {
+            return normalizeInlineText(legend.innerText || legend.textContent || '');
+        }
+
+        return '';
+    }
+
+    function extractMonthLabel(text) {
+        const normalized = normalizeInlineText(text);
+        const match = normalized.match(MONTH_LABEL_RE);
+        return match ? match[0] : '';
+    }
+
+    function isDateLikeText(text) {
+        const normalized = normalizeInlineText(text);
+        if (!normalized) return false;
+        return (
+            /^\d{1,2}(?:\b|[^\d])/.test(normalized)
+            || /\b(?:sun|mon|tue|wed|thu|fri|sat)\b/i.test(normalized)
+            || /\b(?:depart|departure|return|arrive|arrival)\b/i.test(normalized)
+        );
+    }
+
+    function getSemanticElementContext(element, nodeName, role) {
+        let current = element;
+        let depth = 0;
+        let dialogLabel = '';
+        let monthLabel = '';
+        let hasGridAncestor = false;
+        let hasDialogAncestor = false;
+        const contextTrail = [];
+
+        while (current && depth < 8) {
+            const roleAttr = (current.getAttribute('role') || '').toLowerCase();
+            if (!hasGridAncestor && ['grid', 'gridcell', 'table', 'rowgroup'].includes(roleAttr)) {
+                hasGridAncestor = true;
+            }
+            if (!hasDialogAncestor && (roleAttr === 'dialog' || current.getAttribute('aria-modal') === 'true')) {
+                hasDialogAncestor = true;
+            }
+
+            const contextLabel = getElementContextLabel(current);
+            if (contextLabel) {
+                if (!monthLabel) {
+                    monthLabel = extractMonthLabel(contextLabel);
+                }
+                if (!dialogLabel && (roleAttr === 'dialog' || current.getAttribute('aria-modal') === 'true')) {
+                    dialogLabel = contextLabel;
+                }
+                if (contextTrail[contextTrail.length - 1] !== contextLabel) {
+                    contextTrail.push(contextLabel);
+                }
+            }
+
+            current = current.parentElement;
+            depth++;
+        }
+
+        const ariaLabel = getElementAriaLabel(element);
+        if (!monthLabel) {
+            monthLabel = extractMonthLabel(ariaLabel);
+        }
+
+        const targetText = normalizeInlineText(
+            nodeName
+            || ariaLabel
+            || element.innerText
+            || element.textContent
+            || ''
+        );
+        const navLike = /^(previous|next)\b/i.test(targetText) || /^(previous|next)\b/i.test(ariaLabel);
+        const doneLike = /^done\b/i.test(targetText) || /^done\b/i.test(ariaLabel);
+        const dayLike = isDateLikeText(targetText) || isDateLikeText(ariaLabel);
+
+        let widget = '';
+        const normalizedRole = (role || '').toLowerCase();
+        if (
+            (monthLabel || hasGridAncestor || hasDialogAncestor)
+            && (dayLike || navLike || doneLike || normalizedRole === 'gridcell')
+        ) {
+            widget = 'calendar';
+        } else if (hasDialogAncestor) {
+            widget = 'dialog';
+        }
+
+        return {
+            ariaLabel,
+            dialogLabel,
+            monthLabel,
+            widget,
+            contextTrail: contextTrail.slice(0, 4),
+        };
+    }
+
     // === Unified analysis function ===
 
     function collectElementsFromTree(node, elementsMap, viewportLimitEnabled = false) {
@@ -1018,6 +1174,18 @@
 
             // Get visual coordinates for this element
             const coordinates = getElementCoordinates(node.element);
+            const interactiveLike = INTERACTIVE_CONTEXT_ROLES.has((node.role || '').toLowerCase());
+            const inViewport = isInViewport(node.element);
+            const semanticContext = interactiveLike
+                ? getSemanticElementContext(node.element, node.name, node.role)
+                : {
+                    ariaLabel: getElementAriaLabel(node.element),
+                    dialogLabel: '',
+                    monthLabel: '',
+                    widget: '',
+                    contextTrail: []
+                };
+            const occluded = interactiveLike && inViewport ? isOccluded(node.element) : false;
 
             // Store comprehensive element information
             elementsMap[node.ref] = {
@@ -1028,16 +1196,24 @@
                 disabled: node.disabled,
                 checked: node.checked,
                 expanded: node.expanded,
+                selected: node.selected,
                 level: node.level,
 
                 // Visual information (from page_script.js)
                 coordinates: coordinates,
+                inViewport: inViewport,
+                occluded: occluded,
 
                 // Additional metadata (inheritedHref preserves href from merged child nodes)
                 href: node.element.href || node.inheritedHref || null,
                 value: node.element.value || null,
                 placeholder: node.element.placeholder || null,
                 scrollable: node.element.scrollHeight > node.element.clientHeight,
+                ariaLabel: semanticContext.ariaLabel || null,
+                dialogLabel: semanticContext.dialogLabel || null,
+                monthLabel: semanticContext.monthLabel || null,
+                widget: semanticContext.widget || null,
+                contextTrail: semanticContext.contextTrail,
 
                 // Playwright-inspired properties
                 receivesPointerEvents: receivesPointerEvents(node.element),
