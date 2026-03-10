@@ -444,6 +444,146 @@ test("arise-browser regressions", async (t) => {
     assert.equal(value.data.result, "MCO");
   });
 
+  await t.test("select matches semantic time values on native selects and survives control re-render", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for native select regression");
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <select
+            id="time"
+            name="time"
+            aria-ref="e1"
+            onchange="
+              const current = this.value;
+              const replacement = document.createElement('select');
+              replacement.id = 'time';
+              replacement.name = 'time';
+              replacement.setAttribute('aria-ref', 'e2');
+              replacement.innerHTML = this.innerHTML;
+              replacement.value = current;
+              document.body.replaceChild(replacement, this);
+              window.selectedTime = current;
+            "
+          >
+            <option value="All Day">All Day</option>
+            <option value="1700">5:00 PM</option>
+            <option value="1730">5:30 PM</option>
+          </select>
+          <script>window.selectedTime = "";</script>
+        </body>
+      </html>
+    `);
+
+    const startedAt = Date.now();
+    const selected = await postJson("/action", {
+      kind: "select",
+      ref: "e1",
+      value: "17:30",
+    });
+
+    assert.equal(selected.response.status, 200);
+    assert.equal(selected.data.success, true);
+    assert.equal(selected.data.details?.strategy, "native_select");
+    assert.equal(selected.data.details?.resolution?.domain, "time");
+    assert.ok(Date.now() - startedAt < 5000);
+
+    const state = await postJson("/evaluate", {
+      expression: `(() => ({
+        value: document.getElementById("time")?.value || "",
+        ref: document.getElementById("time")?.getAttribute("aria-ref") || "",
+        selectedTime: window.selectedTime || ""
+      }))()`,
+    });
+
+    assert.equal(state.response.status, 200);
+    assert.deepEqual(state.data.result, {
+      value: "1730",
+      ref: "e2",
+      selectedTime: "1730",
+    });
+  });
+
+  await t.test("custom select resolves options inside its own popup scope instead of clicking same-page text matches", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for custom select regression");
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <button
+            id="time-trigger"
+            type="button"
+            aria-ref="e10"
+            role="combobox"
+            aria-controls="time-list"
+            aria-expanded="false"
+            aria-label="Time"
+          >
+            All Day
+          </button>
+          <div id="time-list" role="listbox" hidden>
+            <div role="option" data-value="1700">5:00 PM</div>
+            <div role="option" data-value="1730">5:30 PM</div>
+          </div>
+          <button id="date-17" type="button">Tuesday, March 17, 2026.</button>
+          <script>
+            window.dateClicks = 0;
+            const trigger = document.getElementById("time-trigger");
+            const list = document.getElementById("time-list");
+            const dateButton = document.getElementById("date-17");
+            trigger.addEventListener("click", () => {
+              list.hidden = false;
+              trigger.setAttribute("aria-expanded", "true");
+            });
+            dateButton.addEventListener("click", () => {
+              window.dateClicks += 1;
+            });
+            for (const option of list.querySelectorAll("[role='option']")) {
+              option.addEventListener("click", () => {
+                const text = option.textContent.trim();
+                trigger.textContent = text;
+                trigger.setAttribute("data-value", option.getAttribute("data-value"));
+                trigger.setAttribute("aria-valuetext", text);
+                trigger.setAttribute("aria-expanded", "false");
+                list.hidden = true;
+              });
+            }
+          </script>
+        </body>
+      </html>
+    `);
+
+    const selected = await postJson("/action", {
+      kind: "select",
+      ref: "e10",
+      value: "17:30",
+    });
+
+    assert.equal(selected.response.status, 200);
+    assert.equal(selected.data.success, true);
+    assert.equal(selected.data.details?.strategy, "custom_select");
+    assert.equal(selected.data.details?.resolution?.domain, "time");
+
+    const state = await postJson("/evaluate", {
+      expression: `(() => ({
+        text: document.getElementById("time-trigger")?.textContent?.trim() || "",
+        valueText: document.getElementById("time-trigger")?.getAttribute("aria-valuetext") || "",
+        dateClicks: window.dateClicks || 0
+      }))()`,
+    });
+
+    assert.equal(state.response.status, 200);
+    assert.deepEqual(state.data.result, {
+      text: "5:30 PM",
+      valueText: "5:30 PM",
+      dateClicks: 0,
+    });
+  });
+
   await t.test("click reports focus-only change separately from meaningful ui changes", async () => {
     const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
     assert.ok(page, "expected a page for click regression");

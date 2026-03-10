@@ -35,6 +35,44 @@ interface SelectState {
   ariaValueText: string;
 }
 
+interface SelectIdentity {
+  tagName: string;
+  role: string;
+  id: string;
+  name: string;
+  ariaLabel: string;
+  labelText: string;
+  dataTestId: string;
+}
+
+interface SelectOptionEntry {
+  value: string;
+  text: string;
+  label: string;
+  disabled: boolean;
+  selected: boolean;
+  role: string;
+  dataValue: string;
+  ariaLabel: string;
+}
+
+interface SelectModel extends SelectState {
+  kind: "native_select" | "custom_select";
+  identity: SelectIdentity;
+  ariaControls: string;
+  ariaOwns: string;
+  ariaExpanded: string | null;
+  options: SelectOptionEntry[];
+}
+
+type SelectDomain = "time" | "count" | "generic";
+
+interface SelectResolution {
+  domain: SelectDomain;
+  reason: string;
+  option: SelectOptionEntry;
+}
+
 interface TypeState {
   tagName: string;
   role: string;
@@ -553,48 +591,94 @@ export class ActionExecutor {
     const target = ref ? `[aria-ref='${escapeRef(ref)}']` : selector!;
     const details: Record<string, unknown> = { ref: ref ?? null, selector: selector ?? null, target, value };
     const control = this.page.locator(target).first();
-    const variants = this._buildSelectVariants(value);
-    details.value_variants = variants;
 
     try {
-      const controlCount = await control.count();
-      if (controlCount === 0) {
+      const beforeModel = await this._readSelectModel(control, this.defaultTimeout);
+      if (!beforeModel) {
         details.error = "element_not_found";
         return { success: false, message: "Error: Select failed, element not found", details };
       }
+      details.before_state = this._toSelectStateDebug(beforeModel);
+      details.control_kind = beforeModel.kind;
 
-      const beforeState = await this._readSelectState(control);
-      details.before_state = beforeState;
+      if (beforeModel.kind === "native_select") {
+        const resolution = this._resolveSelectOption(beforeModel.options, value);
+        details.resolution = this._toSelectResolutionDebug(resolution);
+        if (!resolution) {
+          details.error = "option_not_found";
+          return {
+            success: false,
+            message: `Select failed: could not match option '${value}' in ${target}`,
+            details,
+          };
+        }
 
-      // Strategy 1: Native <select> element
-      try {
-        const nativeSelectedValues = await control.selectOption(value, { timeout: this.defaultTimeout });
-        details.native_selected_values = nativeSelectedValues;
+        try {
+          if (resolution.option.value) {
+            details.native_selected_values = await control.selectOption(
+              { value: resolution.option.value },
+              { timeout: this.defaultTimeout },
+            );
+          } else if (resolution.option.label) {
+            details.native_selected_values = await control.selectOption(
+              { label: resolution.option.label },
+              { timeout: this.defaultTimeout },
+            );
+          } else {
+            details.native_selected_values = await control.selectOption(
+              { index: beforeModel.options.indexOf(resolution.option) },
+              { timeout: this.defaultTimeout },
+            );
+          }
+        } catch (nativeErr) {
+          details.native_error = String(nativeErr);
+          details.error = "native_select_failed";
+          return { success: false, message: `Select failed: ${nativeErr}`, details };
+        }
 
-        const nativeReturnMatched = this._valuesMatchExpected(nativeSelectedValues, variants);
-        details.native_return_matched = nativeReturnMatched;
-
-        const afterNativeState = await this._readSelectState(control);
-        details.native_after_state = afterNativeState;
-        const nativeStateMatched =
-          this._stateMatchesExpected(afterNativeState, variants) ||
-          this._stateChanged(beforeState, afterNativeState);
-        details.native_state_matched = nativeStateMatched;
-
-        if (nativeReturnMatched || nativeStateMatched) {
-          details.strategy = nativeStateMatched ? "native_select" : "native_select_return";
+        const afterModel = await this._reacquireSelectModel(target, beforeModel.identity);
+        details.after_state = this._toSelectStateDebug(afterModel);
+        if (afterModel && this._selectModelMatchesResolution(afterModel, resolution)) {
+          details.strategy = "native_select";
           return { success: true, message: `Selected '${value}' in ${target}`, details };
         }
-      } catch (nativeErr) {
-        details.native_error = String(nativeErr);
+
+        details.error = "selection_not_verified";
+        return {
+          success: false,
+          message: `Select failed: could not verify selection '${value}' in ${target}`,
+          details,
+        };
       }
 
-      // Strategy 2: Custom dropdown/combobox/listbox controls
-      const customClicked = await this._selectFromCustomControl(control, variants, details);
-      const afterState = await this._readSelectState(control);
-      details.after_state = afterState;
+      const popup = await this._openCustomSelectScope(control, beforeModel, details);
+      if (!popup) {
+        details.error = "popup_scope_not_found";
+        return {
+          success: false,
+          message: `Select failed: could not determine option scope for ${target}`,
+          details,
+        };
+      }
 
-      if (customClicked && (this._stateMatchesExpected(afterState, variants) || this._stateChanged(beforeState, afterState))) {
+      const popupOptions = await this._readScopedSelectOptions(popup);
+      details.popup_options = popupOptions.map((option) => this._toSelectOptionDebug(option));
+      const resolution = this._resolveSelectOption(popupOptions, value);
+      details.resolution = this._toSelectResolutionDebug(resolution);
+      if (!resolution) {
+        details.error = "option_not_found";
+        return {
+          success: false,
+          message: `Select failed: could not match option '${value}' in ${target}`,
+          details,
+        };
+      }
+
+      const customClicked = await this._clickScopedSelectOption(popup, resolution.option, details);
+      const afterModel = await this._reacquireSelectModel(target, beforeModel.identity);
+      details.after_state = this._toSelectStateDebug(afterModel);
+
+      if (customClicked && afterModel && this._selectModelMatchesResolution(afterModel, resolution)) {
         details.strategy = "custom_select";
         return { success: true, message: `Selected '${value}' in ${target}`, details };
       }
@@ -2488,103 +2572,249 @@ export class ActionExecutor {
     return (value || "").replace(/\s+/g, " ").trim().toLowerCase();
   }
 
-  private _buildSelectVariants(value: string): string[] {
-    const raw = value.trim();
-    if (!raw) return [];
-
-    const variants = new Set<string>([raw]);
-    const number = raw.match(/\d+/)?.[0];
-    if (number) {
-      variants.add(number);
-      variants.add(`${number} people`);
-      variants.add(`${number} person`);
-      variants.add(`${number} guests`);
-      variants.add(`for ${number}`);
-    }
-    return Array.from(variants);
+  private _escapeAttributeValue(value: string): string {
+    return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
   }
 
-  private _matchesVariant(text: string, variant: string): boolean {
-    if (!text || !variant) return false;
-    if (text === variant) return true;
+  private _parseTimeToken(value: string | null | undefined): number | null {
+    const raw = this._normalizeSelectToken(value);
+    if (!raw) return null;
 
-    if (/^\d+$/.test(variant)) {
-      const re = new RegExp(`(^|\\D)${escapeRegex(variant)}(\\D|$)`);
-      return re.test(text);
+    const amPmMatch = raw.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?m\.?$/i);
+    if (amPmMatch) {
+      let hours = Number(amPmMatch[1]);
+      const minutes = Number(amPmMatch[2] || "0");
+      const meridiem = amPmMatch[3].toLowerCase();
+      if (hours > 12 || minutes > 59) return null;
+      if (meridiem === "p" && hours < 12) hours += 12;
+      if (meridiem === "a" && hours === 12) hours = 0;
+      return hours * 60 + minutes;
     }
-    return text.includes(variant);
+
+    const colonMatch = raw.match(/^(\d{1,2}):(\d{2})$/);
+    if (colonMatch) {
+      const hours = Number(colonMatch[1]);
+      const minutes = Number(colonMatch[2]);
+      if (hours > 23 || minutes > 59) return null;
+      return hours * 60 + minutes;
+    }
+
+    const compactMatch = raw.match(/^(\d{3,4})$/);
+    if (compactMatch) {
+      const compact = compactMatch[1].padStart(4, "0");
+      const hours = Number(compact.slice(0, 2));
+      const minutes = Number(compact.slice(2, 4));
+      if (hours > 23 || minutes > 59) return null;
+      return hours * 60 + minutes;
+    }
+
+    return null;
   }
 
-  private _stateMatchesExpected(state: SelectState | null, variants: string[]): boolean {
-    if (!state || variants.length === 0) return false;
+  private _parseCountToken(value: string | null | undefined): number | null {
+    const raw = this._normalizeSelectToken(value);
+    if (!raw || raw.includes(":") || /(?:a\.?m\.?|p\.?m\.?)/i.test(raw)) return null;
 
-    const normalizedVariants = variants
-      .map((v) => this._normalizeSelectToken(v))
-      .filter((v) => !!v);
-    const fields = [
+    const match = raw.match(/(?:^|\b)(\d{1,3})(?:\b|$)/);
+    return match ? Number(match[1]) : null;
+  }
+
+  private _inferSelectDomain(options: SelectOptionEntry[]): SelectDomain {
+    if (options.length === 0) return "generic";
+
+    let timeLike = 0;
+    let countLike = 0;
+    for (const option of options) {
+      if ([option.value, option.text, option.label, option.dataValue, option.ariaLabel]
+        .some((token) => this._parseTimeToken(token) !== null)) {
+        timeLike += 1;
+      }
+      if ([option.value, option.text, option.label, option.dataValue, option.ariaLabel]
+        .some((token) => this._parseCountToken(token) !== null)) {
+        countLike += 1;
+      }
+    }
+
+    if (timeLike >= 2 && timeLike / options.length >= 0.5) return "time";
+    if (countLike >= 2 && countLike / options.length >= 0.5) return "count";
+    return "generic";
+  }
+
+  private _resolveSelectOption(options: SelectOptionEntry[], requestedValue: string): SelectResolution | null {
+    const normalizedRequested = this._normalizeSelectToken(requestedValue);
+    if (!normalizedRequested || options.length === 0) return null;
+
+    const exactMatches = options.filter((option) => {
+      const tokens = [option.value, option.text, option.label, option.dataValue, option.ariaLabel]
+        .map((token) => this._normalizeSelectToken(token))
+        .filter(Boolean);
+      return tokens.includes(normalizedRequested);
+    });
+    if (exactMatches.length === 1) {
+      return { domain: "generic", reason: "exact_token_match", option: exactMatches[0] };
+    }
+
+    const domain = this._inferSelectDomain(options);
+    if (domain === "time") {
+      const requestedMinutes = this._parseTimeToken(requestedValue);
+      if (requestedMinutes !== null) {
+        const matches = options.filter((option) =>
+          [option.value, option.text, option.label, option.dataValue, option.ariaLabel]
+            .map((token) => this._parseTimeToken(token))
+            .some((token) => token === requestedMinutes),
+        );
+        if (matches.length === 1) {
+          return { domain, reason: "semantic_time_match", option: matches[0] };
+        }
+      }
+    }
+
+    if (domain === "count") {
+      const requestedCount = this._parseCountToken(requestedValue);
+      if (requestedCount !== null) {
+        const matches = options.filter((option) =>
+          [option.value, option.text, option.label, option.dataValue, option.ariaLabel]
+            .map((token) => this._parseCountToken(token))
+            .some((token) => token === requestedCount),
+        );
+        if (matches.length === 1) {
+          return { domain, reason: "semantic_count_match", option: matches[0] };
+        }
+      }
+    }
+
+    return null;
+  }
+
+  private _selectStateMatchesOption(state: SelectState | null, resolution: SelectResolution): boolean {
+    if (!state) return false;
+
+    const stateTokens = [
       state.value,
       state.selectedText,
       state.text,
       state.ariaLabel,
       state.ariaValueText,
-    ].map((f) => this._normalizeSelectToken(f));
+    ];
+    const optionTokens = [
+      resolution.option.value,
+      resolution.option.text,
+      resolution.option.label,
+      resolution.option.ariaLabel,
+      resolution.option.dataValue,
+    ];
 
-    return fields.some((field) => normalizedVariants.some((variant) => this._matchesVariant(field, variant)));
+    if (resolution.domain === "time") {
+      const expected = optionTokens
+        .map((token) => this._parseTimeToken(token))
+        .find((token): token is number => token !== null);
+      if (expected === undefined) return false;
+      return stateTokens
+        .map((token) => this._parseTimeToken(token))
+        .some((token) => token === expected);
+    }
+
+    if (resolution.domain === "count") {
+      const expected = optionTokens
+        .map((token) => this._parseCountToken(token))
+        .find((token): token is number => token !== null);
+      if (expected === undefined) return false;
+      return stateTokens
+        .map((token) => this._parseCountToken(token))
+        .some((token) => token === expected);
+    }
+
+    const normalizedOptionTokens = optionTokens
+      .map((token) => this._normalizeSelectToken(token))
+      .filter(Boolean);
+    const normalizedStateTokens = stateTokens
+      .map((token) => this._normalizeSelectToken(token))
+      .filter(Boolean);
+    return normalizedStateTokens.some((token) => normalizedOptionTokens.includes(token));
   }
 
-  private _valuesMatchExpected(values: string[] | null | undefined, variants: string[]): boolean {
-    if (!Array.isArray(values) || values.length === 0 || variants.length === 0) return false;
-
-    const normalizedVariants = variants
-      .map((v) => this._normalizeSelectToken(v))
-      .filter((v) => !!v);
-    const normalizedValues = values
-      .map((value) => this._normalizeSelectToken(value))
-      .filter((value) => !!value);
-
-    return normalizedValues.some((value) =>
-      normalizedVariants.some((variant) => this._matchesVariant(value, variant)),
-    );
+  private _selectModelMatchesResolution(model: SelectModel | null, resolution: SelectResolution): boolean {
+    return this._selectStateMatchesOption(model, resolution);
   }
 
-  private _stateChanged(before: SelectState | null, after: SelectState | null): boolean {
-    if (!before || !after) return false;
-
-    return (
-      this._normalizeSelectToken(before.value) !== this._normalizeSelectToken(after.value) ||
-      this._normalizeSelectToken(before.selectedText) !== this._normalizeSelectToken(after.selectedText) ||
-      this._normalizeSelectToken(before.text) !== this._normalizeSelectToken(after.text) ||
-      this._normalizeSelectToken(before.ariaValueText) !== this._normalizeSelectToken(after.ariaValueText)
-    );
-  }
-
-  private async _readSelectState(control: Locator): Promise<SelectState | null> {
+  private async _readSelectModel(control: Locator, timeoutMs: number): Promise<SelectModel | null> {
     try {
-      return await control.evaluate((node: Element) => {
-        const el = node as HTMLElement;
-        const tagName = (node.tagName || "").toLowerCase();
-        const role = node.getAttribute("role") || "";
-        const value = (node as HTMLInputElement).value || "";
-        const selectedText = tagName === "select"
-          ? Array.from(((node as HTMLSelectElement).selectedOptions || []))
-            .map((opt) => (opt.textContent || "").trim())
-            .filter((txt) => !!txt)
-            .join(" ")
-          : "";
-        const text = (el.innerText || node.textContent || "").replace(/\s+/g, " ").trim();
-        const ariaLabel = node.getAttribute("aria-label") || "";
-        const ariaValueText = node.getAttribute("aria-valuetext") || "";
+      const handle = await control.elementHandle({ timeout: timeoutMs });
+      if (!handle) return null;
+      try {
+        return await handle.evaluate((node: Element) => {
+          const el = node as HTMLElement;
+          const inputLike = node as HTMLInputElement;
+          const tagName = (node.tagName || "").toLowerCase();
+          const role = node.getAttribute("role") || "";
 
-        return {
-          tagName,
-          role,
-          value,
-          selectedText,
-          text,
-          ariaLabel,
-          ariaValueText,
-        };
-      });
+          const labelTexts: string[] = [];
+          if ("labels" in inputLike && inputLike.labels) {
+            for (const labelNode of Array.from(inputLike.labels)) {
+              const text = (labelNode.innerText || labelNode.textContent || "").replace(/\s+/g, " ").trim();
+              if (text) labelTexts.push(text);
+            }
+          }
+          if (labelTexts.length === 0) {
+            const parentLabel = el.closest("label");
+            const text = (parentLabel?.innerText || parentLabel?.textContent || "").replace(/\s+/g, " ").trim();
+            if (text) labelTexts.push(text);
+          }
+          if (labelTexts.length === 0) {
+            const id = inputLike.id || node.getAttribute("id") || "";
+            if (id) {
+              const externalLabel = document.querySelector(`label[for="${id.replace(/"/g, '\\"')}"]`);
+              const text = (externalLabel?.textContent || "").replace(/\s+/g, " ").trim();
+              if (text) labelTexts.push(text);
+            }
+          }
+
+          const selectedText = tagName === "select"
+            ? Array.from(((node as HTMLSelectElement).selectedOptions || []))
+              .map((opt) => (opt.textContent || "").trim())
+              .filter((txt) => !!txt)
+              .join(" ")
+            : "";
+          const options = tagName === "select"
+            ? Array.from((node as HTMLSelectElement).options || []).map((opt) => ({
+              value: opt.value || "",
+              text: (opt.textContent || "").replace(/\s+/g, " ").trim(),
+              label: opt.label || "",
+              disabled: opt.disabled,
+              selected: opt.selected,
+              role: "option",
+              dataValue: opt.getAttribute("data-value") || "",
+              ariaLabel: opt.getAttribute("aria-label") || "",
+            }))
+            : [];
+
+          return {
+            kind: tagName === "select" ? "native_select" : "custom_select",
+            tagName,
+            role,
+            value: inputLike.value || "",
+            selectedText,
+            text: (el.innerText || node.textContent || "").replace(/\s+/g, " ").trim(),
+            ariaLabel: node.getAttribute("aria-label") || "",
+            ariaValueText: node.getAttribute("aria-valuetext") || "",
+            identity: {
+              tagName,
+              role,
+              id: inputLike.id || node.getAttribute("id") || "",
+              name: inputLike.name || node.getAttribute("name") || "",
+              ariaLabel: node.getAttribute("aria-label") || "",
+              labelText: labelTexts.join(" ").replace(/\s+/g, " ").trim().slice(0, 200),
+              dataTestId: node.getAttribute("data-testid") || node.getAttribute("data-test-id") || "",
+            },
+            ariaControls: node.getAttribute("aria-controls") || "",
+            ariaOwns: node.getAttribute("aria-owns") || "",
+            ariaExpanded: node.getAttribute("aria-expanded"),
+            options,
+          };
+        });
+      } finally {
+        await handle.dispose().catch(() => {});
+      }
     } catch {
       return null;
     }
@@ -2625,11 +2855,101 @@ export class ActionExecutor {
     return false;
   }
 
-  private async _selectFromCustomControl(
+  private async _readScopedSelectOptions(scope: Locator): Promise<SelectOptionEntry[]> {
+    try {
+      const handle = await scope.elementHandle({ timeout: this.defaultTimeout });
+      if (!handle) return [];
+      try {
+        return await handle.evaluate((node: Element) => {
+          const seen = new Set<string>();
+          const options: SelectOptionEntry[] = [];
+          const candidates = Array.from(
+            node.querySelectorAll("[role='option'], [role='menuitem'], [role='menuitemradio'], option, [data-value]"),
+          );
+          for (const candidate of candidates) {
+            const html = candidate as HTMLElement;
+            const style = window.getComputedStyle(html);
+            if (style.display === "none" || style.visibility === "hidden") continue;
+            const rect = html.getBoundingClientRect();
+            if (rect.width <= 0 || rect.height <= 0) continue;
+
+            const text = (html.innerText || candidate.textContent || "").replace(/\s+/g, " ").trim();
+            const value = (candidate as HTMLInputElement).value || candidate.getAttribute("value") || "";
+            const label = candidate.getAttribute("label") || "";
+            const ariaLabel = candidate.getAttribute("aria-label") || "";
+            const dataValue = candidate.getAttribute("data-value") || "";
+            const role = candidate.getAttribute("role") || candidate.tagName.toLowerCase();
+            const key = [role, value, text, label, ariaLabel, dataValue].join("||");
+            if (seen.has(key)) continue;
+            seen.add(key);
+
+            options.push({
+              value,
+              text,
+              label,
+              disabled:
+                (candidate as HTMLOptionElement).disabled
+                || candidate.getAttribute("aria-disabled") === "true",
+              selected:
+                (candidate as HTMLOptionElement).selected
+                || candidate.getAttribute("aria-selected") === "true"
+                || candidate.getAttribute("aria-checked") === "true",
+              role,
+              dataValue,
+              ariaLabel,
+            });
+          }
+          return options;
+        });
+      } finally {
+        await handle.dispose().catch(() => {});
+      }
+    } catch {
+      return [];
+    }
+  }
+
+  private async _reacquireSelectModel(target: string, identity: SelectIdentity): Promise<SelectModel | null> {
+    for (const locator of this._buildSelectIdentityLocators(target, identity)) {
+      const model = await this._readSelectModel(locator, this.defaultTimeout);
+      if (model) return model;
+    }
+    return null;
+  }
+
+  private _buildSelectIdentityLocators(target: string, identity: SelectIdentity): Locator[] {
+    const locators: Locator[] = [];
+    locators.push(this.page.locator(target).first());
+
+    const tagName = identity.tagName || "*";
+    if (identity.id) {
+      const escaped = this._escapeAttributeValue(identity.id);
+      locators.push(this.page.locator(`${tagName}[id="${escaped}"]`).first());
+    }
+    if (identity.dataTestId) {
+      const escaped = this._escapeAttributeValue(identity.dataTestId);
+      locators.push(this.page.locator(`[data-testid="${escaped}"]`).first());
+      locators.push(this.page.locator(`[data-test-id="${escaped}"]`).first());
+    }
+    if (identity.name) {
+      const escaped = this._escapeAttributeValue(identity.name);
+      locators.push(this.page.locator(`${tagName}[name="${escaped}"]`).first());
+    }
+    if (identity.ariaLabel) {
+      const escaped = this._escapeAttributeValue(identity.ariaLabel);
+      locators.push(this.page.locator(`${tagName}[aria-label="${escaped}"]`).first());
+    }
+    if (identity.labelText && ["select", "input", "textarea"].includes(tagName)) {
+      locators.push(this.page.getByLabel(identity.labelText, { exact: true }).first());
+    }
+    return locators;
+  }
+
+  private async _openCustomSelectScope(
     control: Locator,
-    variants: string[],
+    beforeModel: SelectModel,
     details: Record<string, unknown>,
-  ): Promise<boolean> {
+  ): Promise<Locator | null> {
     const debugLog: Array<Record<string, unknown>> = [];
     details.custom_attempts = debugLog;
 
@@ -2639,46 +2959,139 @@ export class ActionExecutor {
       await this.page.waitForTimeout(120);
     } catch (e) {
       debugLog.push({ step: "open_control", success: false, error: String(e) });
-      return false;
+      return null;
     }
 
-    for (const variant of variants) {
-      const escapedVariant = variant.replace(/["\\]/g, "\\$&");
-      const fuzzyName = new RegExp(`\\b${escapeRegex(variant)}\\b`, "i");
-
-      const attempts: Array<{ label: string; locator: Locator }> = [
-        { label: `role=option exact "${variant}"`, locator: this.page.getByRole("option", { name: variant, exact: true }) },
-        { label: `role=option fuzzy "${variant}"`, locator: this.page.getByRole("option", { name: fuzzyName }) },
-        { label: `role=menuitemradio exact "${variant}"`, locator: this.page.getByRole("menuitemradio", { name: variant, exact: true }) },
-        { label: `role=menuitemradio fuzzy "${variant}"`, locator: this.page.getByRole("menuitemradio", { name: fuzzyName }) },
-        { label: `role=menuitem exact "${variant}"`, locator: this.page.getByRole("menuitem", { name: variant, exact: true }) },
-        { label: `role=menuitem fuzzy "${variant}"`, locator: this.page.getByRole("menuitem", { name: fuzzyName }) },
-        { label: `role=button exact "${variant}"`, locator: this.page.getByRole("button", { name: variant, exact: true }) },
-        { label: `role=button fuzzy "${variant}"`, locator: this.page.getByRole("button", { name: fuzzyName }) },
-        { label: `data-value="${variant}"`, locator: this.page.locator(`[data-value="${escapedVariant}"]`) },
-        { label: `aria-label="${variant}"`, locator: this.page.locator(`[aria-label="${escapedVariant}"]`) },
-        { label: `text exact "${variant}"`, locator: this.page.getByText(variant, { exact: true }) },
-        { label: `text fuzzy "${variant}"`, locator: this.page.getByText(fuzzyName) },
-      ];
-
-      for (const attempt of attempts) {
-        const clicked = await this._clickFirstVisible(attempt.locator, attempt.label, debugLog);
-        if (clicked) return true;
+    const ownedIds = [beforeModel.ariaControls, beforeModel.ariaOwns]
+      .flatMap((value) => value.split(/\s+/))
+      .map((value) => value.trim())
+      .filter(Boolean);
+    for (const id of ownedIds) {
+      const locator = this.page.locator(`[id="${this._escapeAttributeValue(id)}"]`).first();
+      if (await locator.isVisible().catch(() => false)) {
+        debugLog.push({ step: "use_owned_popup", id });
+        return locator;
       }
     }
 
-    // Last-resort keyboard interaction for focused combobox-like controls
-    try {
-      await control.focus();
-      await control.press("ArrowDown", { timeout: this.shortTimeout });
-      await this.page.waitForTimeout(80);
-      await control.press("Enter", { timeout: this.shortTimeout });
-      debugLog.push({ step: "keyboard_fallback", success: true });
-      return true;
-    } catch (e) {
-      debugLog.push({ step: "keyboard_fallback", success: false, error: String(e) });
-      return false;
+    const nearestScope = await this._findVisiblePopupScope(control);
+    if (nearestScope) {
+      debugLog.push({ step: "use_nearest_popup_scope", success: true });
+      return nearestScope;
     }
+
+    return null;
+  }
+
+  private async _findVisiblePopupScope(control: Locator): Promise<Locator | null> {
+    const popupLocator = this.page.locator("[role='listbox'], [role='menu'], [role='dialog']");
+    const popupCount = await popupLocator.count().catch(() => 0);
+    if (popupCount === 0) return null;
+
+    const controlBox = await control.boundingBox().catch(() => null);
+    let bestIndex = -1;
+    let bestDistance = Number.POSITIVE_INFINITY;
+
+    for (let i = 0; i < Math.min(popupCount, 8); i++) {
+      const candidate = popupLocator.nth(i);
+      const visible = await candidate.isVisible().catch(() => false);
+      if (!visible) continue;
+      if (!controlBox) return candidate;
+
+      const box = await candidate.boundingBox().catch(() => null);
+      if (!box) continue;
+      const dx = box.x + box.width / 2 - (controlBox.x + controlBox.width / 2);
+      const dy = box.y + box.height / 2 - (controlBox.y + controlBox.height / 2);
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestIndex = i;
+      }
+    }
+
+    return bestIndex >= 0 ? popupLocator.nth(bestIndex) : null;
+  }
+
+  private async _clickScopedSelectOption(
+    scope: Locator,
+    option: SelectOptionEntry,
+    details: Record<string, unknown>,
+  ): Promise<boolean> {
+    const debugLog = Array.isArray(details.custom_attempts)
+      ? details.custom_attempts as Array<Record<string, unknown>>
+      : [];
+    const attempts: Array<{ label: string; locator: Locator }> = [];
+
+    if (option.value) {
+      const escapedValue = this._escapeAttributeValue(option.value);
+      attempts.push({
+        label: `option[value="${option.value}"]`,
+        locator: scope.locator(`option[value="${escapedValue}"]`),
+      });
+    }
+    if (option.dataValue) {
+      const escapedDataValue = this._escapeAttributeValue(option.dataValue);
+      attempts.push({
+        label: `[data-value="${option.dataValue}"]`,
+        locator: scope.locator(`[data-value="${escapedDataValue}"]`),
+      });
+    }
+
+    const displayName = option.text || option.label || option.ariaLabel;
+    if (displayName) {
+      attempts.push({
+        label: `scope text exact "${displayName}"`,
+        locator: scope.getByText(displayName, { exact: true }),
+      });
+      if (option.ariaLabel) {
+        attempts.push({
+          label: `scope aria-label "${option.ariaLabel}"`,
+          locator: scope.locator(`[aria-label="${this._escapeAttributeValue(option.ariaLabel)}"]`),
+        });
+      }
+    }
+
+    for (const attempt of attempts) {
+      const clicked = await this._clickFirstVisible(attempt.locator, attempt.label, debugLog);
+      if (clicked) return true;
+    }
+
+    return false;
+  }
+
+  private _toSelectStateDebug(model: SelectModel | null): Record<string, unknown> | null {
+    if (!model) return null;
+    return {
+      kind: model.kind,
+      tagName: model.tagName,
+      role: model.role,
+      value: model.value,
+      selectedText: model.selectedText,
+      ariaValueText: model.ariaValueText,
+      identity: model.identity,
+      optionCount: model.options.length,
+    };
+  }
+
+  private _toSelectOptionDebug(option: SelectOptionEntry | null | undefined): Record<string, unknown> | null {
+    if (!option) return null;
+    return {
+      value: option.value,
+      text: option.text,
+      label: option.label,
+      role: option.role,
+      dataValue: option.dataValue,
+      ariaLabel: option.ariaLabel,
+    };
+  }
+
+  private _toSelectResolutionDebug(resolution: SelectResolution | null): Record<string, unknown> | null {
+    if (!resolution) return null;
+    return {
+      domain: resolution.domain,
+      reason: resolution.reason,
+      option: this._toSelectOptionDebug(resolution.option),
+    };
   }
 
   private _validCoordinates(xCoord: number, yCoord: number): boolean {
