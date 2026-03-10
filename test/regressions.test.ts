@@ -376,6 +376,202 @@ test("arise-browser regressions", async (t) => {
     assert.doesNotMatch(text, /\[context=/i);
   });
 
+  await t.test("text route auto-summarizes result-list pages without dumping the full body text", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for list text regression");
+
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <aside>
+            <button>air conditioning</button>
+            <button>parking</button>
+          </aside>
+          <main>
+            <div>1 - 15 of 254</div>
+            <article>
+              <a href="https://example.com/listing-1">Bright Corner 2 Bed / 2 Bath - Brand New Modern Luxury Condo</a>
+              <div>2br</div>
+              <div>SOMA / south beach</div>
+              <div>$3,990</div>
+            </article>
+            <article>
+              <a href="https://example.com/listing-2">Now Showing, Bicycle Parking, Pets Welcome, Washer and Dryer</a>
+              <div>2br787ft2</div>
+              <div>Mid-Market</div>
+              <div>$4,379</div>
+            </article>
+            <article>
+              <a href="https://example.com/listing-3">Potrero Village Corridor</a>
+              <div>1br990ft2</div>
+              <div>San Francisco</div>
+              <div>$2,000</div>
+            </article>
+            <article>
+              <a href="https://example.com/listing-4">Planned Social Activities, Bike Storage</a>
+              <div>2br</div>
+              <div>portola district</div>
+            </article>
+            <article>
+              <a href="https://example.com/listing-5">Impeccable with Urban Green Spaces, Pet-Friendly!</a>
+              <div>1br736ft2</div>
+              <div>SOMA / south beach</div>
+            </article>
+          </main>
+        </body>
+      </html>
+    `);
+
+    await page.evaluate(() => {
+      history.replaceState({}, "", "https://example.com/search?airconditioning=1");
+    });
+
+    const response = await fetch(`${baseUrl}/text`);
+    const data = await readJson(response);
+
+    assert.equal(response.status, 200);
+    assert.match(String(data.text), /^Result list summary/m);
+    assert.match(String(data.text), /results: 1 - 15 of 254/i);
+    assert.match(String(data.text), /active query params: airconditioning=1/i);
+    assert.match(String(data.text), /Bright Corner 2 Bed \/ 2 Bath/i);
+    assert.match(String(data.text), /url=https:\/\/example\.com\/listing-1/i);
+    assert.doesNotMatch(String(data.text), /^air conditioning$/im);
+  });
+
+  await t.test("text route keeps result list as primary content when an auxiliary calendar table is present", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for mixed list-table text regression");
+
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <main>
+            <div>1 - 15 of 200</div>
+            <article>
+              <a href="https://example.com/listing-1">Retail, Back-lit LED mirrors, Pet spa</a>
+              <div>831ft2</div>
+              <div>San Francisco</div>
+              <div>$5,023</div>
+            </article>
+            <article>
+              <a href="https://example.com/listing-2">Private patios, Pet spa, Bike storage</a>
+              <div>815ft2</div>
+              <div>San Francisco</div>
+              <div>$4,070</div>
+            </article>
+            <article>
+              <a href="https://example.com/listing-3">1bd 1ba, Designer vinyl plank flooring</a>
+              <div>571ft2</div>
+              <div>San Francisco</div>
+              <div>$3,785</div>
+            </article>
+            <article>
+              <a href="https://example.com/listing-4">Luxury Condo @ The Infinity</a>
+              <div>806ft2</div>
+              <div>San Francisco</div>
+              <div>$3,395</div>
+            </article>
+            <article>
+              <a href="https://example.com/listing-5">Now Showing, Bicycle Parking</a>
+              <div>787ft2</div>
+              <div>San Francisco</div>
+              <div>$4,379</div>
+            </article>
+          </main>
+          <section aria-label="Open House Date">
+            <table>
+              <caption>OPEN HOUSE DATE</caption>
+              <tr><th>S</th><th>M</th><th>T</th><th>W</th><th>T</th><th>F</th><th>S</th></tr>
+              <tr><td></td><td></td><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td></tr>
+              <tr><td>6</td><td>7</td><td>8</td><td>9</td><td>10</td><td>11</td><td>12</td></tr>
+            </table>
+          </section>
+        </body>
+      </html>
+    `);
+
+    const response = await fetch(`${baseUrl}/text`);
+    const data = await readJson(response);
+
+    assert.equal(response.status, 200);
+    assert.match(String(data.text), /^Result list summary/m);
+    assert.match(String(data.text), /Retail, Back-lit LED mirrors, Pet spa/i);
+    assert.match(String(data.text), /Auxiliary sections:/i);
+    assert.doesNotMatch(String(data.text), /^Table summary/m);
+  });
+
+  await t.test("compact snapshot compresses result-list cards while preserving filter controls", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for result-list compact snapshot regression");
+
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body class="cl-show-filters">
+          <aside class="filters">
+            <label>Minimum square footage <input type="text" placeholder="min" value="500" /></label>
+            <label>Maximum square footage <input type="text" placeholder="max" value="3000" /></label>
+            <button type="button">apply</button>
+          </aside>
+          <main>
+            ${Array.from({ length: 5 }).map((_, index) => `
+              <article>
+                <a href="https://example.com/listing-${index + 1}"><img alt="" src="/img-${index + 1}.png" /></a>
+                <a href="https://example.com/listing-${index + 1}">Listing ${index + 1} Luxury Condo</a>
+                <div>$${4000 + index}</div>
+                <div>${800 + index}ft2</div>
+                <div>San Francisco</div>
+                <button type="button"></button>
+              </article>
+            `).join("")}
+          </main>
+        </body>
+      </html>
+    `);
+
+    const response = await fetch(`${baseUrl}/snapshot?format=compact&filter=interactive`);
+    const text = await response.text();
+
+    assert.equal(response.status, 200);
+    assert.match(text, /textbox "min"/i);
+    assert.match(text, /textbox "max"/i);
+    assert.match(text, /button "apply"/i);
+    assert.match(text, /\[price="\$4000"\]/i);
+    assert.match(text, /\[location="San Francisco"\]/i);
+    assert.equal((text.match(/https:\/\/example\.com\/listing-1/g) || []).length, 1);
+    assert.doesNotMatch(text, /- button \[ref=.*\[tag=button\]/i);
+  });
+
+  await t.test("text route raw mode preserves the uncompressed page body text", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for raw text regression");
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <main>
+            <h1>Example page</h1>
+            <p>alpha beta gamma</p>
+            <p>delta epsilon zeta</p>
+          </main>
+        </body>
+      </html>
+    `);
+
+    const response = await fetch(`${baseUrl}/text?mode=raw`);
+    const data = await readJson(response);
+
+    assert.equal(response.status, 200);
+    assert.match(String(data.text), /alpha beta gamma/i);
+    assert.doesNotMatch(String(data.text), /^Result list summary/m);
+  });
+
   await t.test("evaluate optionally returns captured console without breaking default shape", async () => {
     const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
     assert.ok(page, "expected a page for evaluate regression");
@@ -444,6 +640,82 @@ test("arise-browser regressions", async (t) => {
     assert.equal(value.data.result, "MCO");
   });
 
+  await t.test("type remains stable after analyzer initialization and SPA URL changes", async () => {
+    const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
+    assert.ok(page, "expected a page for SPA type regression");
+
+    await page.goto("https://example.com/");
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <button type="button">seed</button>
+        </body>
+      </html>
+    `);
+
+    const seededSnapshot = await fetch(`${baseUrl}/snapshot?format=compact&filter=interactive`);
+    assert.equal(seededSnapshot.status, 200);
+
+    await page.evaluate(() => {
+      history.replaceState({}, "", "https://example.com/search?foo=1");
+    });
+
+    await page.setContent(`
+      <!doctype html>
+      <html>
+        <body>
+          <input
+            id="combo-spa"
+            aria-ref="e1"
+            role="combobox"
+            aria-autocomplete="list"
+            autocomplete="off"
+          />
+          <script>
+            const input = document.getElementById("combo-spa");
+            let fromKeyboard = false;
+            input.addEventListener("keydown", () => {
+              fromKeyboard = true;
+            });
+            input.addEventListener("input", () => {
+              if (!fromKeyboard && input.value) {
+                input.value = "";
+              }
+              fromKeyboard = false;
+            });
+          </script>
+        </body>
+      </html>
+    `);
+
+    await page.waitForTimeout(1200);
+
+    const typed = await postJson("/action", {
+      kind: "type",
+      ref: "e1",
+      text: "MCO",
+    });
+    assert.equal(typed.response.status, 200);
+    assert.equal(typed.data.success, true);
+    assert.equal(typed.data.details?.strategy, "keyboard_type");
+    assert.equal(typed.data.details?.keyboard_type_verified, true);
+
+    const value = await postJson("/evaluate", {
+      expression: `(() => ({
+        value: document.getElementById("combo-spa").value,
+        ref: document.getElementById("combo-spa").getAttribute("aria-ref"),
+        trackedUrl: window.__camelLastNavigationUrl || null
+      }))()`,
+    });
+    assert.equal(value.response.status, 200);
+    assert.deepEqual(value.data.result, {
+      value: "MCO",
+      ref: "e1",
+      trackedUrl: "https://example.com/search?foo=1",
+    });
+  });
+
   await t.test("select matches semantic time values on native selects and survives control re-render", async () => {
     const page = await (app as any).session.getPageForTab(undefined, { createIfMissing: true });
     assert.ok(page, "expected a page for native select regression");
@@ -493,7 +765,6 @@ test("arise-browser regressions", async (t) => {
     const state = await postJson("/evaluate", {
       expression: `(() => ({
         value: document.getElementById("time")?.value || "",
-        ref: document.getElementById("time")?.getAttribute("aria-ref") || "",
         selectedTime: window.selectedTime || ""
       }))()`,
     });
@@ -501,8 +772,31 @@ test("arise-browser regressions", async (t) => {
     assert.equal(state.response.status, 200);
     assert.deepEqual(state.data.result, {
       value: "1730",
-      ref: "e2",
       selectedTime: "1730",
+    });
+
+    const reselection = await postJson("/action", {
+      kind: "select",
+      selector: "#time",
+      value: "1700",
+    });
+
+    assert.equal(reselection.response.status, 200);
+    assert.equal(reselection.data.success, true);
+
+    const afterReselection = await postJson("/evaluate", {
+      expression: `(() => ({
+        value: document.getElementById("time")?.value || "",
+        name: document.getElementById("time")?.getAttribute("name") || "",
+        tag: document.getElementById("time")?.tagName || ""
+      }))()`,
+    });
+
+    assert.equal(afterReselection.response.status, 200);
+    assert.deepEqual(afterReselection.data.result, {
+      value: "1700",
+      name: "time",
+      tag: "SELECT",
     });
   });
 

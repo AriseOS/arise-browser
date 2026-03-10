@@ -87,6 +87,16 @@ interface TypeState {
   optionCount: number;
 }
 
+interface TypeIdentity {
+  tagName: string;
+  role: string;
+  type: string;
+  id: string;
+  name: string;
+  ariaLabel: string;
+  placeholder: string;
+}
+
 interface ClickElementDiag {
   tag: string;
   href: string | null;
@@ -495,6 +505,9 @@ export class ActionExecutor {
         return { success: false, message: "Error: type failed, element not found", details };
       }
 
+      const identity = await this._readTypeIdentity(control);
+      details.identity = identity;
+
       const beforeState = await this._readTypeState(control);
       details.before_state = beforeState;
 
@@ -551,7 +564,16 @@ export class ActionExecutor {
         }
 
         await this.page.waitForTimeout(180);
-        const afterState = await this._readTypeState(control);
+        const afterRead = await this._readTypeStateWithFallback(control, identity);
+        details[`${strategy}_state_read_mode`] = afterRead.mode;
+        if (afterRead.error) {
+          details[`${strategy}_state_read_error`] = afterRead.error;
+        }
+        if (!afterRead.state) {
+          continue;
+        }
+
+        const afterState = afterRead.state;
         details[`${strategy}_after_state`] = afterState;
 
         const verified = this._typeStateMatchesExpected(afterState, text);
@@ -563,8 +585,12 @@ export class ActionExecutor {
         }
       }
 
-      const finalState = await this._readTypeState(control);
-      details.after_state = finalState;
+      const finalRead = await this._readTypeStateWithFallback(control, identity);
+      details.after_state_read_mode = finalRead.mode;
+      if (finalRead.error) {
+        details.after_state_read_error = finalRead.error;
+      }
+      details.after_state = finalRead.state;
       details.error = "value_not_verified";
       return {
         success: false,
@@ -2513,24 +2539,143 @@ export class ActionExecutor {
     return `Clicked element (${method}): ${target} (focus changed only; no dialog/listbox/menu/url change observed)`;
   }
 
-  private async _readTypeState(control: Locator): Promise<TypeState> {
-    return await control.evaluate((node: Element) => {
-      const el = node as HTMLElement;
-      const inputLike = node as HTMLInputElement;
-      return {
-        tagName: node.tagName.toLowerCase(),
-        role: node.getAttribute("role") || "",
-        type: inputLike.type || "",
-        value: inputLike.value || "",
-        text: (el.innerText || node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 200),
-        ariaAutocomplete: node.getAttribute("aria-autocomplete"),
-        ariaExpanded: node.getAttribute("aria-expanded"),
-        placeholder: inputLike.placeholder || "",
-        active: document.activeElement === node,
-        listboxCount: document.querySelectorAll("[role='listbox']").length,
-        optionCount: document.querySelectorAll("[role='option']").length,
-      };
-    });
+  private async _readTypeIdentity(control: Locator, timeoutMs: number = this.shortTimeout): Promise<TypeIdentity> {
+    const handle = await control.elementHandle({ timeout: timeoutMs });
+    if (!handle) {
+      throw new Error("type_target_not_found");
+    }
+    try {
+      return await handle.evaluate((node: Element) => {
+        const inputLike = node as HTMLInputElement;
+        return {
+          tagName: node.tagName.toLowerCase(),
+          role: node.getAttribute("role") || "",
+          type: inputLike.type || "",
+          id: inputLike.id || "",
+          name: inputLike.name || "",
+          ariaLabel: node.getAttribute("aria-label") || "",
+          placeholder: inputLike.placeholder || "",
+        };
+      });
+    } finally {
+      await handle.dispose().catch(() => undefined);
+    }
+  }
+
+  private async _readTypeState(control: Locator, timeoutMs: number = this.shortTimeout): Promise<TypeState> {
+    const handle = await control.elementHandle({ timeout: timeoutMs });
+    if (!handle) {
+      throw new Error("type_target_not_found");
+    }
+    try {
+      return await handle.evaluate((node: Element) => {
+        const el = node as HTMLElement;
+        const inputLike = node as HTMLInputElement;
+        return {
+          tagName: node.tagName.toLowerCase(),
+          role: node.getAttribute("role") || "",
+          type: inputLike.type || "",
+          value: inputLike.value || "",
+          text: (el.innerText || node.textContent || "").replace(/\s+/g, " ").trim().slice(0, 200),
+          ariaAutocomplete: node.getAttribute("aria-autocomplete"),
+          ariaExpanded: node.getAttribute("aria-expanded"),
+          placeholder: inputLike.placeholder || "",
+          active: document.activeElement === node,
+          listboxCount: document.querySelectorAll("[role='listbox']").length,
+          optionCount: document.querySelectorAll("[role='option']").length,
+        };
+      });
+    } finally {
+      await handle.dispose().catch(() => undefined);
+    }
+  }
+
+  private async _readTypeStateWithFallback(
+    control: Locator,
+    identity: TypeIdentity,
+  ): Promise<{ state: TypeState | null; mode: string; error?: string }> {
+    try {
+      return { state: await this._readTypeState(control), mode: "ref" };
+    } catch (exc) {
+      const directError = String(exc);
+      const reacquired = await this._reacquireTypeControl(identity);
+      if (!reacquired) {
+        return { state: null, mode: "ref_missing", error: directError };
+      }
+      try {
+        return {
+          state: await this._readTypeState(reacquired),
+          mode: "identity_reacquired",
+        };
+      } catch (inner) {
+        return {
+          state: null,
+          mode: "identity_reacquired_failed",
+          error: `${directError} | ${String(inner)}`,
+        };
+      }
+    }
+  }
+
+  private async _reacquireTypeControl(identity: TypeIdentity): Promise<Locator | null> {
+    for (const locator of this._buildTypeIdentityLocators(identity)) {
+      try {
+        await locator.elementHandle({ timeout: this.shortTimeout });
+        return locator;
+      } catch {
+        // Try the next candidate.
+      }
+    }
+    return null;
+  }
+
+  private _buildTypeIdentityLocators(identity: TypeIdentity): Locator[] {
+    const locators: Locator[] = [];
+    const tagName = identity.tagName || "*";
+    const escapedRole = identity.role ? this._escapeAttributeValue(identity.role) : "";
+    const escapedType = identity.type ? this._escapeAttributeValue(identity.type) : "";
+    const escapedId = identity.id ? this._escapeAttributeValue(identity.id) : "";
+    const escapedName = identity.name ? this._escapeAttributeValue(identity.name) : "";
+    const escapedAriaLabel = identity.ariaLabel ? this._escapeAttributeValue(identity.ariaLabel) : "";
+    const escapedPlaceholder = identity.placeholder ? this._escapeAttributeValue(identity.placeholder) : "";
+
+    const exactParts: string[] = [];
+    if (identity.id) exactParts.push(`[id="${escapedId}"]`);
+    if (identity.name) exactParts.push(`[name="${escapedName}"]`);
+    if (identity.ariaLabel) exactParts.push(`[aria-label="${escapedAriaLabel}"]`);
+    if (identity.placeholder && ["input", "textarea"].includes(tagName)) {
+      exactParts.push(`[placeholder="${escapedPlaceholder}"]`);
+    }
+    if (identity.role) exactParts.push(`[role="${escapedRole}"]`);
+    if (identity.type && tagName === "input") exactParts.push(`[type="${escapedType}"]`);
+    if (exactParts.length > 0) {
+      locators.push(this.page.locator(`${tagName}${exactParts.join("")}`).first());
+    }
+
+    if (identity.id) {
+      locators.push(this.page.locator(`${tagName}[id="${escapedId}"]`).first());
+    }
+    if (identity.name) {
+      locators.push(this.page.locator(`${tagName}[name="${escapedName}"]`).first());
+    }
+    if (identity.ariaLabel) {
+      locators.push(this.page.locator(`${tagName}[aria-label="${escapedAriaLabel}"]`).first());
+    }
+    if (identity.placeholder && ["input", "textarea"].includes(tagName)) {
+      locators.push(this.page.getByPlaceholder(identity.placeholder, { exact: true }).first());
+    }
+    if (identity.role) {
+      let roleSelector = `${tagName}[role="${escapedRole}"]`;
+      if (identity.type && tagName === "input") {
+        roleSelector += `[type="${escapedType}"]`;
+      }
+      locators.push(this.page.locator(roleSelector).first());
+    }
+    if (["input", "textarea"].includes(tagName)) {
+      locators.push(this.page.locator(`${tagName}:focus`).first());
+    }
+
+    return locators;
   }
 
   private _shouldPreferKeyboardTyping(state: TypeState): boolean {

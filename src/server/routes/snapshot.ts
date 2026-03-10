@@ -1,5 +1,5 @@
 import type { FastifyInstance, FastifyRequest } from "fastify";
-import type { BrowserSession } from "../../browser/browser-session.js";
+import type { BrowserSession, PageModel } from "../../browser/browser-session.js";
 import { sendRouteError } from "../route-utils.js";
 
 interface SnapshotQuery {
@@ -67,6 +67,8 @@ interface CompactEntry {
   ref: string;
   element: SnapshotElement;
   role: string;
+  name: string;
+  href: string;
   dialogLabel: string;
   widget: string;
   inViewport: boolean;
@@ -168,6 +170,8 @@ function buildCompactEntries(
         ref,
         element,
         role,
+        name: compactAccessibleName(role, normalizeText(element.name)),
+        href: normalizeText(element.href),
         dialogLabel: normalizeText(element.dialogLabel),
         widget: normalizeText(element.widget).toLowerCase(),
         inViewport: !("inViewport" in element) || element.inViewport !== false,
@@ -241,7 +245,12 @@ function getEntryPriority(entry: CompactEntry, overlay: { dialogLabel?: string; 
   return priority;
 }
 
-function buildCompactLine(ref: string, element: SnapshotElement, semanticMode: boolean): string {
+function buildCompactLine(
+  ref: string,
+  element: SnapshotElement,
+  semanticMode: boolean,
+  options?: { includeLowInfoContext?: boolean },
+): string {
   const role = normalizeText(element.role).toLowerCase() || "generic";
   const accessibleNameRaw = normalizeText(element.name);
   const placeholder = normalizeText(element.placeholder);
@@ -336,10 +345,82 @@ function buildCompactLine(ref: string, element: SnapshotElement, semanticMode: b
   if (semanticMode && dialogLabel) {
     parts.push(`[dialog="${escapeCompactText(dialogLabel)}"]`);
   }
-  if (semanticMode && contextTrail.length > 0) {
+  const shouldIncludeContext =
+    contextTrail.length > 0
+    && (
+      semanticMode
+      || (
+        options?.includeLowInfoContext === true
+        && VALUE_ROLES.has(role)
+        && lowInfoName
+      )
+    );
+  if (shouldIncludeContext) {
     parts.push(`[context="${escapeCompactText(contextTrail.join(" | "))}"]`);
   }
 
+  return parts.join(" ");
+}
+
+function normalizeHrefKey(value: string): string {
+  return value.replace(/#.*$/, "").trim();
+}
+
+function isLowSignalResultListEntry(entry: CompactEntry): boolean {
+  if (entry.role === "button") {
+    return !entry.name && !entry.hasValue && !entry.selected && !entry.expanded;
+  }
+  if (entry.role === "link") {
+    return Boolean(entry.href) && !entry.name;
+  }
+  return false;
+}
+
+interface ResultListGroup {
+  href: string;
+  refs: string[];
+  primaryRef: string;
+  title: string;
+}
+
+function buildResultListGroups(entries: CompactEntry[]): ResultListGroup[] {
+  const byHref = new Map<string, CompactEntry[]>();
+  for (const entry of entries) {
+    if (entry.role !== "link" || !entry.href) continue;
+    const key = normalizeHrefKey(entry.href);
+    if (!key) continue;
+    const list = byHref.get(key) ?? [];
+    list.push(entry);
+    byHref.set(key, list);
+  }
+
+  return [...byHref.entries()]
+    .map(([href, groupEntries]) => {
+      const sorted = [...groupEntries].sort((a, b) => b.name.length - a.name.length);
+      const named = sorted.find((entry) => entry.name.length >= 8) ?? sorted[0];
+      if (!named) return null;
+      return {
+        href,
+        refs: groupEntries.map((entry) => entry.ref),
+        primaryRef: named.ref,
+        title: named.name || href,
+      };
+    })
+    .filter((group): group is ResultListGroup => Boolean(group));
+}
+
+function buildResultListCompactLine(
+  group: ResultListGroup,
+  pageModel: PageModel | undefined,
+): string {
+  const matchedCard = pageModel?.listSummary?.cards.find(
+    (card) => card.url && normalizeHrefKey(card.url) === group.href,
+  );
+  const parts = [`- link "${escapeCompactText(matchedCard?.title || group.title)}"`, `[ref=${group.primaryRef}]`];
+  if (matchedCard?.price) parts.push(`[price="${escapeCompactText(matchedCard.price)}"]`);
+  if (matchedCard?.location) parts.push(`[location="${escapeCompactText(matchedCard.location)}"]`);
+  if (matchedCard?.meta) parts.push(`[meta="${escapeCompactText(matchedCard.meta)}"]`);
+  parts.push("-> " + group.href);
   return parts.join(" ");
 }
 
@@ -347,12 +428,12 @@ function buildCompactSnapshotFromElements(
   elements: Record<string, unknown>,
   interactiveOnly: boolean,
   semanticMode: boolean,
+  pageModel?: PageModel,
 ): string {
   const entries = buildCompactEntries(elements, interactiveOnly);
   const overlay = semanticMode ? detectDominantOverlay(entries) : null;
-  const lines = entries
-    .filter((entry) => shouldKeepEntry(entry, overlay))
-    .sort((entryA, entryB) => {
+  const sortEntries = (items: CompactEntry[]): CompactEntry[] =>
+    [...items].sort((entryA, entryB) => {
       const priorityA = getEntryPriority(entryA, overlay);
       const priorityB = getEntryPriority(entryB, overlay);
       if (priorityA !== priorityB) return priorityB - priorityA;
@@ -361,10 +442,42 @@ function buildCompactSnapshotFromElements(
       const orderB = parseRefOrder(entryB.ref);
       if (orderA !== orderB) return orderA - orderB;
       return entryA.ref.localeCompare(entryB.ref);
-    })
-    .map((entry) => buildCompactLine(entry.ref, entry.element, semanticMode));
+    });
 
-  return lines.join("\n");
+  const resultListMode =
+    !overlay
+    && pageModel?.primaryContent === "result_list"
+    && (pageModel.listSummary?.cards.length ?? 0) >= 5;
+
+  if (resultListMode) {
+    const groups = buildResultListGroups(entries)
+      .filter((group) =>
+        pageModel?.listSummary?.cards.some(
+          (card) => card.url && normalizeHrefKey(card.url) === group.href,
+        ),
+      );
+    const groupedRefs = new Set(groups.flatMap((group) => group.refs));
+    const controlLines = sortEntries(entries)
+      .filter((entry) => shouldKeepEntry(entry, overlay))
+      .filter((entry) => !groupedRefs.has(entry.ref))
+      .filter((entry) => !isLowSignalResultListEntry(entry))
+      .map((entry) =>
+        buildCompactLine(entry.ref, entry.element, semanticMode, {
+          includeLowInfoContext: pageModel?.filtersVisible === true,
+        }),
+      );
+    const cardLines = groups.map((group) => buildResultListCompactLine(group, pageModel));
+    return [...controlLines, ...cardLines].join("\n");
+  }
+
+  return sortEntries(entries)
+    .filter((entry) => shouldKeepEntry(entry, overlay))
+    .map((entry) =>
+      buildCompactLine(entry.ref, entry.element, semanticMode, {
+        includeLowInfoContext: pageModel?.filtersVisible === true,
+      }),
+    )
+    .join("\n");
 }
 
 export function registerSnapshotRoute(app: FastifyInstance) {
@@ -381,12 +494,17 @@ export function registerSnapshotRoute(app: FastifyInstance) {
       if (format === "json" || (format === "compact" && !diffOnly)) {
         const result = await session.getSnapshotWithElements({ tabId, viewportLimit: vpLimit });
         const elements = result.elements as Record<string, unknown>;
+        const pageModel =
+          format === "compact"
+            ? await session.getPageModel(tabId, { includeRawText: false }).catch(() => undefined)
+            : undefined;
 
         if (format === "compact") {
           const compactText = buildCompactSnapshotFromElements(
             elements,
             interactiveOnly,
             semanticMode,
+            pageModel,
           );
           if (compactText) {
             return reply.type("text/plain").send(compactText);

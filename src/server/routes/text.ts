@@ -4,14 +4,15 @@ import { sendRouteError } from "../route-utils.js";
 
 interface TextQuery {
   tabId?: string;
+  mode?: string;
 }
 
 export function registerTextRoute(app: FastifyInstance) {
   app.get("/text", async (request: FastifyRequest<{ Querystring: TextQuery }>, reply) => {
     const session = (app as any).session as BrowserSession;
-    const { tabId } = request.query;
+    const { tabId, mode } = request.query;
     try {
-      const text = await session.getPageText(tabId);
+      const text = await session.getPageText(tabId, (mode as any) || "auto");
       const info = await session.getPageInfo(tabId);
       return {
         text,

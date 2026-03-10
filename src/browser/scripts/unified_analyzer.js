@@ -19,43 +19,9 @@
     // LRU tracking for ref access times
     let refAccessTimes = window.__camelRefAccessTimes || new Map();
     let lastNavigationUrl = window.__camelLastNavigationUrl || window.location.href;
+    window.__camelLastNavigationUrl = lastNavigationUrl;
 
     console.log(`[CAMEL-REF-DEBUG] Init: hadExistingState=${_hadExistingState}, existingMapSize=${_existingMapSize}, refCounter=${refCounter}, ariaRefsInDOM=${document.querySelectorAll('[aria-ref]').length}`);
-
-    // Initialize navigation event listeners for automatic cleanup
-    if (!window.__camelNavigationListenersInitialized) {
-        window.__camelNavigationListenersInitialized = true;
-
-        // Listen for page navigation events
-        window.addEventListener('beforeunload', clearAllRefs);
-        window.addEventListener('pagehide', clearAllRefs);
-
-        // Listen for pushState/replaceState navigation (SPA navigation)
-        const originalPushState = history.pushState;
-        const originalReplaceState = history.replaceState;
-
-        history.pushState = function(...args) {
-            clearAllRefs();
-            return originalPushState.apply(this, args);
-        };
-
-        history.replaceState = function(...args) {
-            clearAllRefs();
-            return originalReplaceState.apply(this, args);
-        };
-
-        // Listen for popstate (back/forward navigation)
-        window.addEventListener('popstate', clearAllRefs);
-
-        // Check for URL changes periodically (fallback for other navigation types)
-        setInterval(() => {
-            if (window.location.href !== lastNavigationUrl) {
-                clearAllRefs();
-                lastNavigationUrl = window.location.href;
-                window.__camelLastNavigationUrl = lastNavigationUrl;
-            }
-        }, 1000);
-    }
 
     function generateRef() {
         const ref = `e${refCounter++}`;
@@ -95,6 +61,56 @@
         } catch (error) {
             console.warn('CAMEL: Error clearing refs:', error);
         }
+    }
+
+    window.__camelClearAllRefs = clearAllRefs;
+    lastNavigationUrl = window.location.href;
+    window.__camelLastNavigationUrl = lastNavigationUrl;
+
+    // Initialize navigation event listeners for automatic cleanup
+    if (!window.__camelNavigationListenersInitialized) {
+        window.__camelNavigationListenersInitialized = true;
+
+        const clearAndSyncNavigationState = function() {
+            try {
+                if (typeof window.__camelClearAllRefs === 'function') {
+                    window.__camelClearAllRefs();
+                }
+            } finally {
+                window.__camelLastNavigationUrl = window.location.href;
+            }
+        };
+
+        // Listen for page navigation events
+        window.addEventListener('beforeunload', clearAndSyncNavigationState);
+        window.addEventListener('pagehide', clearAndSyncNavigationState);
+
+        // Listen for pushState/replaceState navigation (SPA navigation)
+        const originalPushState = history.pushState;
+        const originalReplaceState = history.replaceState;
+
+        history.pushState = function(...args) {
+            const result = originalPushState.apply(this, args);
+            clearAndSyncNavigationState();
+            return result;
+        };
+
+        history.replaceState = function(...args) {
+            const result = originalReplaceState.apply(this, args);
+            clearAndSyncNavigationState();
+            return result;
+        };
+
+        // Listen for popstate (back/forward navigation)
+        window.addEventListener('popstate', clearAndSyncNavigationState);
+
+        // Check for URL changes periodically (fallback for other navigation types)
+        setInterval(() => {
+            const trackedUrl = window.__camelLastNavigationUrl || window.location.href;
+            if (window.location.href !== trackedUrl) {
+                clearAndSyncNavigationState();
+            }
+        }, 1000);
     }
 
     // LRU eviction: Remove least recently used refs when limit exceeded
@@ -1394,6 +1410,9 @@
         window.__camelLastAnalysisResult = result;
         window.__camelLastAnalysisTime = currentTime;
         window.__camelLastAnalysisViewportLimit = viewport_limit;
+        lastNavigationUrl = window.location.href;
+        window.__camelLastNavigationUrl = lastNavigationUrl;
+        window.__camelClearAllRefs = clearAllRefs;
 
         return result;
     }

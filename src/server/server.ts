@@ -14,6 +14,7 @@ import { registerSnapshotRoute } from "./routes/snapshot.js";
 import { registerActionRoute } from "./routes/action.js";
 import { registerActionsRoute } from "./routes/actions.js";
 import { registerTextRoute } from "./routes/text.js";
+import { registerPageModelRoute } from "./routes/page-model.js";
 import { registerScreenshotRoute } from "./routes/screenshot.js";
 import { registerPdfRoute } from "./routes/pdf.js";
 import { registerEvaluateRoute } from "./routes/evaluate.js";
@@ -59,6 +60,7 @@ export async function createServer(
   registerActionRoute(app);
   registerActionsRoute(app);
   registerTextRoute(app);
+  registerPageModelRoute(app);
   registerScreenshotRoute(app);
   registerPdfRoute(app);
   registerEvaluateRoute(app);

@@ -22,6 +22,765 @@ import type { AriseBrowserConfig, ActionResult, TabInfo, SessionRef } from "../t
 
 const logger = createLogger("browser-session");
 
+type PageTextMode = "auto" | "raw" | "list" | "article" | "table" | "readability";
+type ResolvedPageTextMode = Exclude<PageTextMode, "readability">;
+
+export interface PageModelInput {
+  type?: string;
+  label?: string;
+  placeholder?: string;
+  name?: string;
+  value?: string;
+  context?: string;
+}
+
+export interface PageModelCard {
+  title: string;
+  url?: string;
+  price?: string;
+  location?: string;
+  meta?: string;
+}
+
+export interface PageModelListSummary {
+  totalResults?: string;
+  querySummary?: string;
+  visibleCards: number;
+  hiddenVisibleCards: number;
+  strongCardCount: number;
+  score: number;
+  cards: PageModelCard[];
+}
+
+export interface PageModelTableSummary {
+  caption?: string;
+  columns: string[];
+  rows: string[][];
+  visibleRows: number;
+  score: number;
+  calendarLike: boolean;
+}
+
+export interface PageModelArticleSummary {
+  title?: string;
+  paragraphs: string[];
+  score: number;
+}
+
+export interface PageModel {
+  primaryContent: "result_list" | "table" | "article" | "form" | "generic";
+  confidence: number;
+  querySummary?: string;
+  queryParams: Record<string, string>;
+  filtersVisible: boolean;
+  visibleInputs: PageModelInput[];
+  auxiliarySections: string[];
+  listSummary?: PageModelListSummary;
+  tableSummary?: PageModelTableSummary;
+  articleSummary?: PageModelArticleSummary;
+  rawText?: string;
+}
+
+function renderListSummary(summary: PageModelListSummary): string {
+  const lines = ["Result list summary"];
+  if (summary.totalResults) lines.push(`- results: ${summary.totalResults}`);
+  if (summary.querySummary) lines.push(`- active query params: ${summary.querySummary}`);
+  lines.push(`- visible cards summarized: ${summary.cards.length}`);
+  lines.push("");
+  lines.push("Visible items:");
+  summary.cards.forEach((card, index) => {
+    const parts = [`${index + 1}. ${card.title}`];
+    if (card.price) parts.push(`price=${card.price}`);
+    if (card.location) parts.push(`location=${card.location}`);
+    if (card.meta) parts.push(`meta=${card.meta}`);
+    if (card.url) parts.push(`url=${card.url}`);
+    lines.push(parts.join(" | "));
+  });
+  if (summary.hiddenVisibleCards > 0) {
+    lines.push(`... ${summary.hiddenVisibleCards} more visible cards not expanded`);
+  }
+  return lines.join("\n");
+}
+
+function renderTableSummary(summary: PageModelTableSummary): string {
+  const lines = ["Table summary"];
+  if (summary.caption) lines.push(`- caption: ${summary.caption}`);
+  lines.push(`- columns: ${summary.columns.join(" | ")}`);
+  lines.push(`- visible rows summarized: ${Math.min(summary.visibleRows, summary.rows.length)}`);
+  lines.push("");
+  lines.push("Rows:");
+  summary.rows.forEach((row, index) => {
+    const pairs = row
+      .slice(0, summary.columns.length)
+      .map((cell, cellIndex) => `${summary.columns[cellIndex] || `col${cellIndex + 1}`}=${cell}`);
+    lines.push(`${index + 1}. ${pairs.join(" | ")}`);
+  });
+  if (summary.visibleRows > summary.rows.length) {
+    lines.push(`... ${summary.visibleRows - summary.rows.length} more visible rows not expanded`);
+  }
+  return lines.join("\n");
+}
+
+function renderArticleSummary(summary: PageModelArticleSummary): string {
+  const lines = ["Article summary"];
+  if (summary.title) lines.push(`- title: ${summary.title}`);
+  lines.push("");
+  lines.push(...summary.paragraphs.slice(0, 8));
+  if (summary.paragraphs.length > 8) {
+    lines.push(`... ${summary.paragraphs.length - 8} more paragraphs not expanded`);
+  }
+  return lines.join("\n");
+}
+
+function renderTextFromPageModel(model: PageModel, mode: ResolvedPageTextMode): string {
+  const rawText = model.rawText || "";
+  if (mode === "raw") return rawText;
+  if (mode === "list") return model.listSummary ? renderListSummary(model.listSummary) : rawText;
+  if (mode === "table") return model.tableSummary ? renderTableSummary(model.tableSummary) : rawText;
+  if (mode === "article") {
+    return model.articleSummary ? renderArticleSummary(model.articleSummary) : rawText;
+  }
+
+  if (model.primaryContent === "result_list" && model.listSummary) {
+    const summary = renderListSummary(model.listSummary);
+    if (model.auxiliarySections.includes("calendar_table")) {
+      return `${summary}\n\nAuxiliary sections:\n- calendar availability table detected but not treated as the main content`;
+    }
+    return summary;
+  }
+  if (model.primaryContent === "table" && model.tableSummary) {
+    return renderTableSummary(model.tableSummary);
+  }
+  if (model.primaryContent === "article" && model.articleSummary) {
+    return renderArticleSummary(model.articleSummary);
+  }
+  if (model.listSummary) return renderListSummary(model.listSummary);
+  if (model.tableSummary) return renderTableSummary(model.tableSummary);
+  if (model.articleSummary) return renderArticleSummary(model.articleSummary);
+  return rawText;
+}
+
+function buildTextExtractionSource(mode: ResolvedPageTextMode): string {
+  return `
+(() => {
+  const requestedMode = ${JSON.stringify(mode)};
+  const normalize = function(value, max) {
+    const collapsed = String(value || '')
+      .replace(/\\u200b/g, ' ')
+      .replace(/\\s+/g, ' ')
+      .trim();
+    if (!max || collapsed.length <= max) return collapsed;
+    return collapsed.slice(0, Math.max(0, max - 3)).trimEnd() + '...';
+  };
+
+  const normalizeLines = function(value) {
+    return String(value || '')
+      .split(/\\n+/)
+      .map(function(line) { return normalize(line, 0); })
+      .filter(Boolean);
+  };
+
+  const isVisible = function(element) {
+    if (!(element instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(element);
+    if (style.visibility === 'hidden' || style.display === 'none') return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width >= 1
+      && rect.height >= 1
+      && rect.bottom > 0
+      && rect.right > 0
+      && rect.top < (window.innerHeight || document.documentElement.clientHeight) * 1.5;
+  };
+
+  const isTimeLikeLine = function(line) {
+    return /^(?:<\\s*)?\\d+\\s*(?:m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|week|weeks|mo|month|months)\\s+ago$/i.test(line)
+      || /^(?:today|yesterday)$/i.test(line)
+      || /^\\d{1,2}:\\d{2}\\s*(?:AM|PM)$/i.test(line);
+  };
+
+  const bodyText = normalize(document.body.innerText || document.body.textContent || '', 0);
+
+  const buildQuerySummary = function() {
+    try {
+      const params = new URL(window.location.href).searchParams;
+      const entries = [];
+      for (const pair of params.entries()) {
+        const key = pair[0];
+        const value = pair[1];
+        if (!key || key === 'tabId') continue;
+        entries.push(value ? key + '=' + normalize(value, 48) : key);
+        if (entries.length >= 6) break;
+      }
+      return entries.length > 0 ? entries.join(', ') : null;
+    } catch {
+      return null;
+    }
+  };
+
+  const buildTableSummary = function() {
+    const tables = Array.from(document.querySelectorAll('table')).filter(isVisible);
+    if (tables.length === 0) return null;
+
+    const candidates = tables
+      .map(function(table) {
+        const rows = Array.from(table.querySelectorAll('tr'))
+          .map(function(row) {
+            return Array.from(row.querySelectorAll('th, td'))
+              .map(function(cell) { return normalize(cell.innerText || cell.textContent || '', 80); })
+              .filter(Boolean);
+          })
+          .filter(function(row) { return row.length > 0; });
+        const header = rows[0] || [];
+        const dataRows = rows.slice(header.length > 0 ? 1 : 0);
+        return {
+          header,
+          dataRows,
+          score: (header.length * 2) + dataRows.length,
+        };
+      })
+      .filter(function(candidate) { return candidate.header.length >= 2 && candidate.dataRows.length >= 2; })
+      .sort(function(a, b) { return b.score - a.score; });
+
+    const best = candidates[0];
+    if (!best) return null;
+
+    const lines = [
+      'Table summary',
+      '- columns: ' + best.header.join(' | '),
+      '- visible rows summarized: ' + String(Math.min(best.dataRows.length, 12)),
+      '',
+      'Rows:',
+    ];
+
+    best.dataRows.slice(0, 12).forEach(function(row, index) {
+      const pairs = row
+        .slice(0, best.header.length)
+        .map(function(cell, cellIndex) {
+          return (best.header[cellIndex] || ('col' + String(cellIndex + 1))) + '=' + cell;
+        });
+      lines.push(String(index + 1) + '. ' + pairs.join(' | '));
+    });
+
+    if (best.dataRows.length > 12) {
+      lines.push('... ' + String(best.dataRows.length - 12) + ' more visible rows not expanded');
+    }
+
+    return lines.join('\\n');
+  };
+
+  const findCardRoot = function(anchor) {
+    let best = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    let current = anchor;
+    let depth = 0;
+    while (current && current !== document.body && depth < 6) {
+      if (isVisible(current)) {
+        const text = normalize(current.innerText || current.textContent || '', 900);
+        const linkCount = Array.from(current.querySelectorAll('a[href]')).filter(isVisible).length;
+        const tag = current.tagName.toLowerCase();
+        const rect = current.getBoundingClientRect();
+        let score = 0;
+        if (text.length >= 24 && text.length <= 800) score += 4;
+        if (['article', 'li', 'section', 'tr'].includes(tag)) score += 3;
+        if (tag === 'div') score += 1;
+        if (linkCount >= 1 && linkCount <= 6) score += 2;
+        if (/\\$\\s?\\d[\\d,]*/.test(text)) score += 2;
+        if (/(?:^|\\b)(studio|\\d+\\s*br|\\d+\\s*ba|\\d+\\s*ft2|\\d+\\s*beds?|\\d+\\s*baths?)(?:\\b|$)/i.test(text)) {
+          score += 2;
+        }
+        if (rect.width >= 140 && rect.height >= 48) score += 2;
+
+        const parent = current.parentElement;
+        if (parent) {
+          const siblingCount = Array.from(parent.children).filter(function(child) {
+            if (!(child instanceof HTMLElement)) return false;
+            if (child.tagName !== current.tagName) return false;
+            return isVisible(child) && !!child.querySelector('a[href]');
+          }).length;
+          if (siblingCount >= 3) score += Math.min(5, siblingCount);
+        }
+
+        if (score > bestScore) {
+          best = current;
+          bestScore = score;
+        }
+      }
+      current = current.parentElement;
+      depth += 1;
+    }
+    return best || anchor;
+  };
+
+  const buildListSummary = function(force) {
+    const mainRoot =
+      document.querySelector("main, [role='main'], #main, .main")
+      || document.body;
+
+    const anchors = Array.from(mainRoot.querySelectorAll('a[href]'))
+      .filter(function(anchor) { return anchor instanceof HTMLAnchorElement; })
+      .filter(function(anchor) {
+        if (!isVisible(anchor)) return false;
+        const href = normalize(anchor.href, 0);
+        const text = normalize(anchor.innerText || anchor.textContent || '', 0);
+        if (!href || href.startsWith('javascript:') || href === window.location.href) return false;
+        return text.length >= 8;
+      });
+
+    const seenRoots = new Set();
+    const roots = anchors
+      .map(function(anchor) { return findCardRoot(anchor); })
+      .filter(function(root) {
+        if (seenRoots.has(root)) return false;
+        seenRoots.add(root);
+        return true;
+      })
+      .map(function(root) {
+        return {
+          root,
+          top: root.getBoundingClientRect().top + window.scrollY,
+          text: normalize(root.innerText || root.textContent || '', 1200),
+        };
+      })
+      .filter(function(entry) { return entry.text.length >= 24; })
+      .sort(function(a, b) { return a.top - b.top; });
+
+    const strongCards = roots.filter(function(entry) {
+      return /\\$\\s?\\d[\\d,]*/.test(entry.text)
+        || /(?:^|\\b)(studio|\\d+\\s*br|\\d+\\s*ba|\\d+\\s*ft2|\\d+\\s*beds?|\\d+\\s*baths?)(?:\\b|$)/i.test(entry.text);
+    });
+
+    if (!force && (roots.length < 5 || strongCards.length < Math.min(3, roots.length))) {
+      return null;
+    }
+    if (roots.length === 0) return null;
+
+    const totalResultsMatch = bodyText.match(/\\b\\d+\\s*-\\s*\\d+\\s+of\\s+\\d[\\d,]*\\b/i);
+    const querySummary = buildQuerySummary();
+
+    const lines = ['Result list summary'];
+    if (totalResultsMatch) lines.push('- results: ' + totalResultsMatch[0]);
+    if (querySummary) lines.push('- active query params: ' + querySummary);
+
+    const visibleCards = roots.slice(0, 15).map(function(entry, index) {
+      const root = entry.root;
+      const fullText = normalize(root.innerText || root.textContent || '', 1400);
+      const textLines = normalizeLines(root.innerText || root.textContent || '');
+      const visibleLinks = Array.from(root.querySelectorAll('a[href]'))
+        .filter(function(link) { return link instanceof HTMLAnchorElement; })
+        .filter(isVisible);
+
+      const primaryLink = visibleLinks
+        .map(function(link) {
+          const text = normalize(link.innerText || link.textContent || '', 180);
+          return {
+            link,
+            text,
+            score: Math.min(normalize(link.innerText || link.textContent || '', 0).length, 180),
+          };
+        })
+        .filter(function(candidate) { return candidate.text.length >= 8; })
+        .sort(function(a, b) { return b.score - a.score; })[0]?.link || visibleLinks[0] || null;
+
+      const heading = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6'))
+        .filter(isVisible)
+        .map(function(node) { return normalize(node.innerText || node.textContent || '', 180); })
+        .find(Boolean) || '';
+
+      const title = heading || normalize((primaryLink && (primaryLink.innerText || primaryLink.textContent)) || '', 180);
+      const priceMatch = fullText.match(/(?:US\\$|\\$)\\s?\\d[\\d,]*(?:\\.\\d{2})?/);
+      const price = priceMatch ? priceMatch[0] : '';
+      const meta = textLines.find(function(line) {
+        return /(?:^|\\b)(studio|\\d+\\s*br|\\d+\\s*ba|\\d+\\s*ft2|\\d+\\s*beds?|\\d+\\s*baths?)(?:\\b|$)/i.test(line);
+      }) || '';
+      const location = textLines.find(function(line) {
+        return line !== title
+          && line !== price
+          && line !== meta
+          && !isTimeLikeLine(line)
+          && !/show duplicates/i.test(line)
+          && !/^\\d+\\s*-\\s*\\d+\\s+of\\s+\\d+/i.test(line)
+          && !/^(?:US\\$|\\$)\\s?\\d[\\d,]*(?:\\.\\d{2})?$/i.test(line)
+          && line.length >= 3
+          && line.length <= 72;
+      }) || '';
+
+      const parts = [String(index + 1) + '. ' + (title || normalize(fullText, 120))];
+      if (price) parts.push('price=' + price);
+      if (location) parts.push('location=' + location);
+      if (meta) parts.push('meta=' + meta);
+      if (primaryLink && primaryLink.href) parts.push('url=' + normalize(primaryLink.href, 220));
+      return parts.join(' | ');
+    });
+
+    lines.push('- visible cards summarized: ' + String(visibleCards.length));
+    lines.push('');
+    lines.push('Visible items:');
+    lines.push.apply(lines, visibleCards);
+    if (roots.length > visibleCards.length) {
+      lines.push('... ' + String(roots.length - visibleCards.length) + ' more visible cards not expanded');
+    }
+
+    return lines.join('\\n');
+  };
+
+  const buildArticleSummary = function() {
+    const container = document.querySelector("article, main, [role='main']");
+    if (!container || !isVisible(container)) return null;
+
+    const paragraphs = Array.from(container.querySelectorAll('p'))
+      .filter(isVisible)
+      .map(function(node) { return normalize(node.innerText || node.textContent || '', 420); })
+      .filter(function(text) { return text.length >= 50; });
+    if (paragraphs.length < 3) return null;
+
+    const headingNode = container.querySelector('h1, h2, h3');
+    const heading = normalize((headingNode && (headingNode.innerText || headingNode.textContent)) || document.title || '', 180);
+    const lines = ['Article summary'];
+    if (heading) lines.push('- title: ' + heading);
+    lines.push('');
+    lines.push.apply(lines, paragraphs.slice(0, 8));
+    if (paragraphs.length > 8) {
+      lines.push('... ' + String(paragraphs.length - 8) + ' more paragraphs not expanded');
+    }
+    return lines.join('\\n');
+  };
+
+  if (requestedMode === 'raw') return bodyText;
+  if (requestedMode === 'table') return buildTableSummary() || bodyText;
+  if (requestedMode === 'list') return buildListSummary(true) || bodyText;
+  if (requestedMode === 'article') return buildArticleSummary() || bodyText;
+
+  const tableSummary = buildTableSummary();
+  if (tableSummary) return tableSummary;
+  const listSummary = buildListSummary(false);
+  if (listSummary) return listSummary;
+  return bodyText;
+})()
+`.trim();
+}
+
+function buildPageModelSource(options?: { includeRawText?: boolean }): string {
+  const includeRawText = options?.includeRawText ?? false;
+  return `
+(() => {
+  const includeRawText = ${includeRawText ? "true" : "false"};
+  const normalize = function(value, max) {
+    const collapsed = String(value || '')
+      .replace(/\\u200b/g, ' ')
+      .replace(/\\s+/g, ' ')
+      .trim();
+    if (!max || collapsed.length <= max) return collapsed;
+    return collapsed.slice(0, Math.max(0, max - 3)).trimEnd() + '...';
+  };
+  const normalizeLines = function(value) {
+    return String(value || '')
+      .split(/\\n+/)
+      .map(function(line) { return normalize(line, 0); })
+      .filter(Boolean);
+  };
+  const isVisible = function(element) {
+    if (!(element instanceof HTMLElement)) return false;
+    const style = window.getComputedStyle(element);
+    if (style.visibility === 'hidden' || style.display === 'none') return false;
+    const rect = element.getBoundingClientRect();
+    return rect.width >= 1
+      && rect.height >= 1
+      && rect.bottom > 0
+      && rect.right > 0
+      && rect.top < (window.innerHeight || document.documentElement.clientHeight) * 1.5;
+  };
+  const bodyText = normalize(document.body.innerText || document.body.textContent || '', 0);
+  const buildQueryData = function() {
+    const paramsObject = {};
+    const parts = [];
+    try {
+      const params = new URL(window.location.href).searchParams;
+      for (const pair of params.entries()) {
+        const key = pair[0];
+        const value = pair[1];
+        if (!key || key === 'tabId') continue;
+        paramsObject[key] = value;
+        if (parts.length < 6) {
+          parts.push(value ? key + '=' + normalize(value, 48) : key);
+        }
+      }
+    } catch {
+      return { summary: undefined, params: {} };
+    }
+    return { summary: parts.length > 0 ? parts.join(', ') : undefined, params: paramsObject };
+  };
+  const isTimeLikeLine = function(line) {
+    return /^(?:<\\s*)?\\d+\\s*(?:m|min|mins|minute|minutes|h|hr|hrs|hour|hours|d|day|days|w|wk|week|weeks|mo|month|months)\\s+ago$/i.test(line)
+      || /^(?:today|yesterday)$/i.test(line)
+      || /^\\d{1,2}:\\d{2}\\s*(?:AM|PM)$/i.test(line);
+  };
+  const getAssociatedLabel = function(element) {
+    if (!(element instanceof HTMLElement)) return '';
+    const ariaLabel = normalize(element.getAttribute('aria-label') || '', 120);
+    if (ariaLabel) return ariaLabel;
+    const id = element.getAttribute('id');
+    if (id) {
+      const label = document.querySelector('label[for="' + CSS.escape(id) + '"]');
+      if (label instanceof HTMLElement) {
+        const text = normalize(label.innerText || label.textContent || '', 120);
+        if (text) return text;
+      }
+    }
+    const wrappingLabel = element.closest('label');
+    if (wrappingLabel instanceof HTMLElement) {
+      const text = normalize(wrappingLabel.innerText || wrappingLabel.textContent || '', 120);
+      if (text) return text;
+    }
+    return '';
+  };
+  const getContextText = function(element) {
+    if (!(element instanceof HTMLElement)) return '';
+    const seen = new Set();
+    const parts = [];
+    let current = element.parentElement;
+    let depth = 0;
+    while (current && current !== document.body && depth < 5) {
+      const directContext = current.querySelector(':scope > legend, :scope > h1, :scope > h2, :scope > h3, :scope > h4, :scope > .label, :scope > .title, :scope > button, :scope > strong');
+      if (directContext instanceof HTMLElement) {
+        const text = normalize(directContext.innerText || directContext.textContent || '', 120);
+        if (text && !seen.has(text)) {
+          seen.add(text);
+          parts.push(text);
+        }
+      }
+      const ownText = normalize(current.getAttribute('aria-label') || '', 120);
+      if (ownText && !seen.has(ownText)) {
+        seen.add(ownText);
+        parts.push(ownText);
+      }
+      current = current.parentElement;
+      depth += 1;
+    }
+    return parts.slice(0, 3).join(' | ');
+  };
+  const visibleInputs = Array.from(document.querySelectorAll('input, select, textarea'))
+    .filter(isVisible)
+    .map(function(element) {
+      if (!(element instanceof HTMLElement)) return null;
+      const result = {
+        type: normalize(element.getAttribute('type') || element.tagName || '', 24).toLowerCase(),
+        label: getAssociatedLabel(element),
+        placeholder: normalize(element.getAttribute('placeholder') || '', 80),
+        name: normalize(element.getAttribute('name') || element.getAttribute('id') || '', 80),
+        context: getContextText(element),
+      };
+      if ('value' in element && typeof element.value === 'string') {
+        const value = normalize(element.value || '', 80);
+        if (value) return { ...result, value };
+      }
+      return result;
+    })
+    .filter(Boolean);
+  const detectFiltersVisible = function() {
+    const bodyClass = normalize(document.body.className || '', 200);
+    if (/\\b(?:cl-show-filters|show-filters|filters-open|open-filters)\\b/i.test(bodyClass)) {
+      return true;
+    }
+    const containers = Array.from(document.querySelectorAll("aside, form, [role='complementary'], [class*='filter'], [id*='filter'], [data-testid*='filter'], [data-test*='filter']")).filter(isVisible);
+    const hasVisibleApply = Array.from(document.querySelectorAll('button, [role="button"]'))
+      .filter(isVisible)
+      .some(function(node) {
+        const text = normalize(node.innerText || node.textContent || '', 80);
+        return /^(apply|reset|update search|search)$/i.test(text);
+      });
+    const strongContainer = containers.some(function(container) {
+      const controls = Array.from(container.querySelectorAll('input, select, textarea, button, [role="button"], [role="checkbox"], [role="switch"]')).filter(isVisible);
+      const text = normalize(container.innerText || container.textContent || '', 500);
+      return controls.length >= 4 && (/\\b(filter|price|rent|beds?|baths?|sqft|square footage|housing type|laundry|parking|pets|amenities|neighborhood)\\b/i.test(text) || /\\b(apply|reset|update search)\\b/i.test(text));
+    });
+    return strongContainer || (visibleInputs.length >= 4 && hasVisibleApply);
+  };
+  const buildTableSummary = function() {
+    const tables = Array.from(document.querySelectorAll('table')).filter(isVisible);
+    if (tables.length === 0) return null;
+    const candidates = tables
+      .map(function(table) {
+        const rows = Array.from(table.querySelectorAll('tr'))
+          .map(function(row) {
+            return Array.from(row.querySelectorAll('th, td'))
+              .map(function(cell) { return normalize(cell.innerText || cell.textContent || '', 80); })
+              .filter(Boolean);
+          })
+          .filter(function(row) { return row.length > 0; });
+        const columns = rows[0] || [];
+        const dataRows = rows.slice(columns.length > 0 ? 1 : 0);
+        const captionNode = table.querySelector('caption');
+        const caption = normalize(table.getAttribute('aria-label') || (captionNode && (captionNode.innerText || captionNode.textContent)) || '', 120);
+        const weekdayHeaders = columns.filter(function(cell) { return /^(?:s|m|t|w|f|sa|su|sun|mon|tue|wed|thu|fri|sat)$/i.test(cell); }).length;
+        const calendarLike = columns.length === 7 && weekdayHeaders >= 6;
+        return {
+          caption,
+          columns,
+          rows: dataRows.slice(0, 12),
+          visibleRows: dataRows.length,
+          calendarLike,
+          score: (columns.length * 2) + dataRows.length + (caption ? 2 : 0) - (calendarLike ? 4 : 0),
+        };
+      })
+      .filter(function(candidate) { return candidate.columns.length >= 2 && candidate.visibleRows >= 2; })
+      .sort(function(a, b) { return b.score - a.score; });
+    return candidates[0] || null;
+  };
+  const findCardRoot = function(anchor) {
+    let best = null;
+    let bestScore = Number.NEGATIVE_INFINITY;
+    let current = anchor;
+    let depth = 0;
+    while (current && current !== document.body && depth < 6) {
+      if (isVisible(current)) {
+        const text = normalize(current.innerText || current.textContent || '', 900);
+        const linkCount = Array.from(current.querySelectorAll('a[href]')).filter(isVisible).length;
+        const tag = current.tagName.toLowerCase();
+        const rect = current.getBoundingClientRect();
+        let score = 0;
+        if (text.length >= 24 && text.length <= 900) score += 4;
+        if (['article', 'li', 'section', 'tr'].includes(tag)) score += 3;
+        if (tag === 'div') score += 1;
+        if (linkCount >= 1 && linkCount <= 6) score += 2;
+        if (/\\$\\s?\\d[\\d,]*/.test(text)) score += 2;
+        if (/(?:^|\\b)(studio|\\d+\\s*br|\\d+\\s*ba|\\d+\\s*ft2|\\d+\\s*beds?|\\d+\\s*baths?)(?:\\b|$)/i.test(text)) score += 2;
+        if (rect.width >= 140 && rect.height >= 48) score += 2;
+        const parent = current.parentElement;
+        if (parent) {
+          const siblingCount = Array.from(parent.children).filter(function(child) {
+            if (!(child instanceof HTMLElement)) return false;
+            if (child.tagName !== current.tagName) return false;
+            return isVisible(child) && !!child.querySelector('a[href]');
+          }).length;
+          if (siblingCount >= 3) score += Math.min(5, siblingCount);
+        }
+        if (score > bestScore) {
+          best = current;
+          bestScore = score;
+        }
+      }
+      current = current.parentElement;
+      depth += 1;
+    }
+    return best || anchor;
+  };
+  const buildListSummary = function(force) {
+    const mainRoot = document.querySelector("main, [role='main'], #main, .main") || document.body;
+    const anchors = Array.from(mainRoot.querySelectorAll('a[href]'))
+      .filter(function(anchor) { return anchor instanceof HTMLAnchorElement; })
+      .filter(function(anchor) {
+        if (!isVisible(anchor)) return false;
+        const href = normalize(anchor.href, 0);
+        const text = normalize(anchor.innerText || anchor.textContent || '', 0);
+        if (!href || href.startsWith('javascript:') || href === window.location.href) return false;
+        return text.length >= 8;
+      });
+    const seenRoots = new Set();
+    const roots = anchors
+      .map(function(anchor) { return findCardRoot(anchor); })
+      .filter(function(root) {
+        if (seenRoots.has(root)) return false;
+        seenRoots.add(root);
+        return true;
+      })
+      .map(function(root) {
+        return { root, top: root.getBoundingClientRect().top + window.scrollY, text: normalize(root.innerText || root.textContent || '', 1200) };
+      })
+      .filter(function(entry) { return entry.text.length >= 24; })
+      .sort(function(a, b) { return a.top - b.top; });
+    const strongCards = roots.filter(function(entry) {
+      return /\\$\\s?\\d[\\d,]*/.test(entry.text) || /(?:^|\\b)(studio|\\d+\\s*br|\\d+\\s*ba|\\d+\\s*ft2|\\d+\\s*beds?|\\d+\\s*baths?)(?:\\b|$)/i.test(entry.text);
+    });
+    if (!force && (roots.length < 5 || strongCards.length < Math.min(3, roots.length))) return null;
+    if (roots.length === 0) return null;
+    const totalResultsMatch = bodyText.match(/\\b\\d+\\s*-\\s*\\d+\\s+of\\s+\\d[\\d,]*\\b/i);
+    const queryData = buildQueryData();
+    const cards = roots.slice(0, 30).map(function(entry) {
+      const root = entry.root;
+      const fullText = normalize(root.innerText || root.textContent || '', 1400);
+      const textLines = normalizeLines(root.innerText || root.textContent || '');
+      const visibleLinks = Array.from(root.querySelectorAll('a[href]')).filter(function(link) { return link instanceof HTMLAnchorElement; }).filter(isVisible);
+      const primaryLink = visibleLinks
+        .map(function(link) {
+          const text = normalize(link.innerText || link.textContent || '', 180);
+          return { link, text, score: Math.min(normalize(link.innerText || link.textContent || '', 0).length, 180) };
+        })
+        .filter(function(candidate) { return candidate.text.length >= 8; })
+        .sort(function(a, b) { return b.score - a.score; })[0]?.link || visibleLinks[0] || null;
+      const heading = Array.from(root.querySelectorAll('h1, h2, h3, h4, h5, h6')).filter(isVisible).map(function(node) { return normalize(node.innerText || node.textContent || '', 180); }).find(Boolean) || '';
+      const title = heading || normalize((primaryLink && (primaryLink.innerText || primaryLink.textContent)) || '', 180);
+      const priceMatch = fullText.match(/(?:US\\$|\\$)\\s?\\d[\\d,]*(?:\\.\\d{2})?/);
+      const price = priceMatch ? priceMatch[0] : '';
+      const meta = textLines.find(function(line) { return /(?:^|\\b)(studio|\\d+\\s*br|\\d+\\s*ba|\\d+\\s*ft2|\\d+\\s*beds?|\\d+\\s*baths?)(?:\\b|$)/i.test(line); }) || '';
+      const location = textLines.find(function(line) {
+        return line !== title && line !== price && line !== meta && !isTimeLikeLine(line) && !/show duplicates/i.test(line) && !/^\\d+\\s*-\\s*\\d+\\s+of\\s+\\d+/i.test(line) && !/^(?:US\\$|\\$)\\s?\\d[\\d,]*(?:\\.\\d{2})?$/i.test(line) && line.length >= 3 && line.length <= 72;
+      }) || '';
+      return {
+        title: title || normalize(fullText, 120),
+        ...(price ? { price } : {}),
+        ...(location ? { location } : {}),
+        ...(meta ? { meta } : {}),
+        ...(primaryLink && primaryLink.href ? { url: normalize(primaryLink.href, 220) } : {}),
+      };
+    });
+    return {
+      totalResults: totalResultsMatch ? totalResultsMatch[0] : undefined,
+      querySummary: queryData.summary,
+      visibleCards: roots.length,
+      hiddenVisibleCards: Math.max(0, roots.length - Math.min(roots.length, 30)),
+      strongCardCount: strongCards.length,
+      score: roots.length + (strongCards.length * 2) + (totalResultsMatch ? 3 : 0),
+      cards,
+    };
+  };
+  const buildArticleSummary = function() {
+    const container = document.querySelector("article, main, [role='main']");
+    if (!container || !isVisible(container)) return null;
+    const paragraphs = Array.from(container.querySelectorAll('p')).filter(isVisible).map(function(node) { return normalize(node.innerText || node.textContent || '', 420); }).filter(function(text) { return text.length >= 50; });
+    if (paragraphs.length < 3) return null;
+    const headingNode = container.querySelector('h1, h2, h3');
+    const title = normalize((headingNode && (headingNode.innerText || headingNode.textContent)) || document.title || '', 180);
+    return { ...(title ? { title } : {}), paragraphs, score: paragraphs.length * 2 + (title ? 2 : 0) };
+  };
+  const queryData = buildQueryData();
+  const listSummary = buildListSummary(false);
+  const tableSummary = buildTableSummary();
+  const articleSummary = buildArticleSummary();
+  const filtersVisible = detectFiltersVisible();
+  const auxiliarySections = [];
+  let primaryContent = 'generic';
+  let confidence = 0.25;
+  if (listSummary && (!tableSummary || tableSummary.calendarLike || listSummary.score >= tableSummary.score + 1)) {
+    primaryContent = 'result_list';
+    confidence = Math.min(0.98, 0.55 + (listSummary.strongCardCount / Math.max(3, listSummary.cards.length)));
+    if (tableSummary) auxiliarySections.push(tableSummary.calendarLike ? 'calendar_table' : 'table');
+  } else if (tableSummary && tableSummary.score >= 7) {
+    primaryContent = 'table';
+    confidence = Math.min(0.95, 0.45 + (tableSummary.score / 30));
+  } else if (articleSummary && articleSummary.score >= 8) {
+    primaryContent = 'article';
+    confidence = Math.min(0.92, 0.4 + (articleSummary.score / 40));
+  } else if (filtersVisible && visibleInputs.length >= 3) {
+    primaryContent = 'form';
+    confidence = 0.6;
+  }
+  return {
+    primaryContent,
+    confidence,
+    ...(queryData.summary ? { querySummary: queryData.summary } : {}),
+    queryParams: queryData.params,
+    filtersVisible,
+    visibleInputs,
+    auxiliarySections,
+    ...(listSummary ? { listSummary } : {}),
+    ...(tableSummary ? { tableSummary } : {}),
+    ...(articleSummary ? { articleSummary } : {}),
+    ...(includeRawText ? { rawText: bodyText } : {}),
+  };
+})()
+`.trim();
+}
+
 function isLikelySingleExpression(source: string): boolean {
   const trimmed = source.trim().replace(/;$/, "");
   return !trimmed.includes("\n")
@@ -902,12 +1661,46 @@ export class BrowserSession implements SessionRef {
 
   // ===== Text extraction =====
 
-  async getPageText(tabId?: string): Promise<string> {
+  async getPageModel(
+    tabId?: string,
+    options?: { includeRawText?: boolean },
+  ): Promise<PageModel> {
     const page = await this.getPageForTab(tabId);
-    if (!page || page.isClosed()) return "";
+    if (!page || page.isClosed()) {
+      return {
+        primaryContent: "generic",
+        confidence: 0,
+        queryParams: {},
+        filtersVisible: false,
+        visibleInputs: [],
+        auxiliarySections: [],
+        ...(options?.includeRawText ? { rawText: "" } : {}),
+      };
+    }
 
     try {
-      return await page.evaluate(() => document.body.innerText || document.body.textContent || "");
+      return await page.evaluate(buildPageModelSource(options));
+    } catch (e) {
+      logger.warn({ err: e }, "Page model extraction failed");
+      return {
+        primaryContent: "generic",
+        confidence: 0,
+        queryParams: {},
+        filtersVisible: false,
+        visibleInputs: [],
+        auxiliarySections: [],
+        ...(options?.includeRawText ? { rawText: "" } : {}),
+      };
+    }
+  }
+
+  async getPageText(tabId?: string, mode: PageTextMode = "auto"): Promise<string> {
+    try {
+      const resolvedMode: ResolvedPageTextMode = mode === "readability" ? "auto" : mode;
+      const model = await this.getPageModel(tabId, {
+        includeRawText: resolvedMode === "raw" || resolvedMode === "auto",
+      });
+      return renderTextFromPageModel(model, resolvedMode);
     } catch (e) {
       logger.warn({ err: e }, "Text extraction failed");
       return "";
