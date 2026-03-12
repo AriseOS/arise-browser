@@ -447,6 +447,11 @@
             return 'textbox';
         }
         if (['select', 'textarea'].includes(tagName)) return tagName;
+
+        // contenteditable elements act as textboxes (e.g. div[contenteditable="plaintext-only"])
+        const ce = node.getAttribute('contenteditable');
+        if (ce && ce !== 'false') return 'textbox';
+
         if (['h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tagName)) return 'heading';
 
         // Additional roles for better Playwright compatibility
@@ -530,32 +535,119 @@
         return 0;
     }
 
+    // Structural containers — should NOT get name from descendant text.
+    // Per WAI-ARIA spec, these only get names from aria-label/aria-labelledby.
+    // NOTE: 'generic' is NOT here — handled separately via post-traversal cleanup
+    // in buildAriaTree (clear name only for generics that have child ariaNodes).
+    const CONTAINER_ROLES = new Set([
+        'group', 'list', 'table', 'row', 'rowgroup',
+        'region', 'main', 'navigation', 'complementary', 'banner', 'contentinfo',
+        'search', 'form', 'grid', 'treegrid', 'menu', 'menubar', 'toolbar',
+        'tablist', 'tree', 'directory', 'document', 'application',
+    ]);
+
     function getAccessibleName(node) {
         // Check if node is null or doesn't have required methods
         if (!node || !node.hasAttribute || !node.getAttribute) return '';
 
+        // 1. aria-label always wins
         if (node.hasAttribute('aria-label')) return node.getAttribute('aria-label') || '';
+
+        // 2. aria-labelledby
         if (node.hasAttribute('aria-labelledby')) {
             const id = node.getAttribute('aria-labelledby');
             const labelEl = document.getElementById(id);
             if (labelEl) return labelEl.textContent || '';
         }
-        // This is the new, visibility-aware text extraction logic.
-        const text = getVisibleTextContent(node);
 
-        // Add a heuristic to ignore code-like text that might be in the DOM
+        // 3. For container roles, stop here — do NOT collect descendant text.
+        //    This prevents <section> from getting a giant name that swallows all children.
+        const role = getRole(node);
+        if (CONTAINER_ROLES.has(role)) return '';
+
+        // 4. For input-like elements, use placeholder / data-placeholder
+        if (node.hasAttribute('placeholder')) return node.getAttribute('placeholder') || '';
+        if (node.hasAttribute('data-placeholder')) return node.getAttribute('data-placeholder') || '';
+
+        // 5. For leaf/interactive elements, use visible text content
+        const rawText = getVisibleTextContent(node);
+        const text = rawText.replace(/\s+/g, ' ').trim();
+
+        // Ignore code-like text
         if ((text.match(/[;:{}]/g)?.length || 0) > 2) return '';
 
+        if (text) return text;
 
-
-        return text;
+        // 6. Last resort for interactive elements: infer name from CSS class or title/tooltip.
+        //    Many icon buttons have no a11y label but their class reveals intent
+        //    (e.g., "smart-search-btn-search" → "search", "btn-voice" → "voice").
+        if (INTERACTIVE_TAGS.has(node.tagName?.toLowerCase?.())) {
+            // title attribute
+            if (node.hasAttribute('title')) return node.getAttribute('title') || '';
+            // Infer from class name: extract the most descriptive segment
+            const inferredName = inferNameFromClass(node);
+            if (inferredName) return inferredName;
+            // Check child icon elements for class-based hints
+            const iconChild = node.querySelector('i[class], span[class], svg[class]');
+            if (iconChild) {
+                const iconName = inferNameFromClass(iconChild);
+                if (iconName) return iconName;
+            }
         }
+
+        return '';
+    }
+
+    const INTERACTIVE_TAGS = new Set(['button', 'a', 'input', 'select', 'summary']);
+
+    /**
+     * Infer a human-readable name from an element's CSS class.
+     * Last resort for icon buttons/links with no accessible name.
+     * Strips common noise prefixes and joins remaining segments.
+     * May produce obfuscated names on minified sites — that's acceptable
+     * since there's no other information available.
+     */
+    function inferNameFromClass(el) {
+        const cls = el.className;
+        if (!cls || typeof cls !== 'string') return '';
+
+        const NOISE_WORDS = new Set([
+            'btn', 'button', 'icon', 'icons', 'ico', 'img', 'svg',
+            'fa', 'fas', 'far', 'fab', 'material', 'glyphicon',
+            'bi', 'ri', 'feather', 'lucide', 'storyicon',
+            'hide', 'show', 'active', 'disabled', 'container',
+            'wrapper', 'inner', 'outer',
+        ]);
+
+        const segments = cls.split(/\s+/)
+            .flatMap(c => c.split(/[-_]+/))
+            .map(s => s.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase().trim())
+            .flatMap(s => s.split(/\s+/))
+            .filter(s => s.length > 1 && !NOISE_WORDS.has(s) && !/^\d+$/.test(s));
+
+        if (segments.length === 0) return '';
+
+        const seen = new Set();
+        const unique = segments.filter(s => { if (seen.has(s)) return false; seen.add(s); return true; });
+
+        return unique.slice(0, 3).join(' ') || '';
+    }
 
     const STRONG_SEMANTIC_ROLES = new Set([
         'button', 'link', 'checkbox', 'radio', 'switch', 'tab', 'option',
         'textbox', 'searchbox', 'combobox', 'select', 'spinbutton', 'slider',
         'menuitem', 'menuitemcheckbox', 'menuitemradio', 'treeitem',
         'dialog', 'listbox'
+    ]);
+
+    // Structural landmark roles — preserve even without a name.
+    // These provide page layout structure (header, nav, footer, sections)
+    // that prevents the tree from becoming completely flat.
+    // Note: 'region' and 'form' are excluded — they're too common without names
+    // (every <section> and <form>) and would add noise without adding structure.
+    const STRUCTURAL_ROLES = new Set([
+        'banner', 'navigation', 'main', 'contentinfo', 'complementary',
+        'search',
     ]);
 
     const ACTIONABLE_TAGS = new Set(['button', 'a', 'input', 'select', 'textarea', 'summary']);
@@ -746,11 +838,21 @@
                 }
             }
 
-            // Remove redundant text children that duplicate the element's accessible name.
-            // Only remove when text is essentially the same as parent name (exact match
-            // or covers most of it), NOT when it's merely a substring of a long
-            // concatenated name — that would incorrectly strip product data from
-            // large list containers whose name is all descendant text joined.
+            // Post-traversal: clear name for container-like nodes that have child ariaNodes.
+            // When a node has child ariaNodes, its name (from getVisibleTextContent) is just
+            // concatenated descendant text which swallows child content. Clear it so children
+            // can express themselves. Only text-only leaf nodes keep their computed name.
+            // IMPORTANT: This must run BEFORE text dedup, otherwise the inflated name causes
+            // text dedup to incorrectly remove useful text children.
+            const POST_CLEAR_ROLES = new Set(['generic', 'listitem', 'cell']);
+            if (ariaNode && ariaNode.name && POST_CLEAR_ROLES.has(ariaNode.role)) {
+                const hasChildNodes = ariaNode.children.some(c => typeof c !== 'string');
+                if (hasChildNodes) {
+                    ariaNode.name = '';
+                }
+            }
+
+            // Remove redundant text children that match the element's name
             if (ariaNode && ariaNode.children.length > 0) {
                 ariaNode.children = ariaNode.children.filter(child => {
                     if (typeof child === 'string') {
@@ -762,12 +864,9 @@
                             return false;
                         }
 
-                        // Remove if child text covers a significant portion of parent name
-                        // (at least 50%), indicating true redundancy rather than being
-                        // a small fragment inside a large concatenated container name.
-                        if (childText.length > 3
-                            && parentName.includes(childText)
-                            && childText.length >= parentName.length * 0.5) {
+                        // Also remove if the child text is completely contained in parent name
+                        // and represents a significant portion (to avoid removing important partial text)
+                        if (childText.length > 3 && parentName.includes(childText)) {
                             return false;
                         }
 
@@ -882,10 +981,33 @@
     }
 
     /**
+     * Check if a subtree is entirely noise — no actionable content for an LLM.
+     * A node is noise if it's a generic with no name and either no children
+     * or all children are also noise. This catches Material Design icon containers,
+     * decorative wrappers, and similar structures.
+     */
+    function isNoiseSubtree(node) {
+        const role = (node.role || '').toLowerCase();
+        // Non-generic roles or nodes with names/refs are not noise
+        if (role !== 'generic' || (node.name && node.name.trim())) return false;
+        // Interactive elements are never noise
+        if (STRONG_SEMANTIC_ROLES.has(role)) return false;
+        // String children (text) that have content are not noise
+        for (const child of node.children) {
+            if (typeof child === 'string') {
+                if (child.trim()) return false;
+            } else {
+                if (!isNoiseSubtree(child)) return false;
+            }
+        }
+        return true;
+    }
+
+    /**
      * Phase 3: Render the normalized tree into the final string format.
      * Complete preservation of snapshot.js renderTree logic with Playwright enhancements
      */
-    function renderTree(node, indent = '', refToHref = {}) {
+    function renderTree(node, indent = '', refToHref = {}, ancestorName = '') {
         const lines = [];
         let meaningfulProps = '';
         if (node.disabled) meaningfulProps += ' [disabled]';
@@ -904,17 +1026,49 @@
 
         const name = (node.name || '').replace(/\s+/g, ' ').trim();
 
-        // Skip elements with empty names and no meaningful props
-        if (!name && !meaningfulProps) {
-            // If element has no name and no meaningful props, render its children directly at current level
+        const role = (node.role || '').toLowerCase();
+
+        // Skip generic leaf nodes whose name is already covered by an ancestor.
+        // This catches redundant wrappers that normalizeTree missed due to intermediate layers.
+        // e.g., button "1" > div(name='') > p "1" — the p is redundant.
+        if (role === 'generic' && name && !meaningfulProps && ancestorName
+            && ancestorName.includes(name) && node.children.length === 0) {
+            return lines;
+        }
+
+        // Skip occluded generics with no name — they are pure noise
+        // (background decorations, hidden overlays, Material icon containers, etc.)
+        // Also skip if all descendants are equally useless (occluded/empty generics).
+        if (role === 'generic' && !name && node.occluded) {
+            if (node.children.length === 0 || isNoiseSubtree(node)) {
+                return lines;
+            }
+        }
+
+        // Skip single-character decorative generics (visual separators like |, •, /, ·)
+        // These waste tokens and provide no actionable information to the LLM.
+        if (role === 'generic' && name.length === 1 && !meaningfulProps && node.children.length === 0) {
+            return lines;
+        }
+
+        // Skip elements with empty names and no meaningful props,
+        // but never skip interactive or structural elements.
+        // Interactive elements must remain addressable by ref.
+        // Structural roles (banner, navigation, etc.) provide page structure
+        // even without a name — without them the tree becomes flat.
+        if (!name && !meaningfulProps && !STRONG_SEMANTIC_ROLES.has(role)
+            && !STRUCTURAL_ROLES.has(role)) {
+            // Transparent node: render children at current level.
+            // Pass ancestorName so text dedup works across transparent wrappers.
             for (const child of node.children) {
                 if (typeof child === 'string') {
                     const childText = child.replace(/\s+/g, ' ').trim();
-                    if (childText) { // Only add non-empty text
+                    // Apply same text dedup against ancestor name
+                    if (childText && !(ancestorName && ancestorName.includes(childText))) {
                         lines.push(`${indent}- text "${childText}"`);
                     }
                 } else {
-                    lines.push(...renderTree(child, indent, refToHref));
+                    lines.push(...renderTree(child, indent, refToHref, ancestorName));
                 }
             }
             return lines;
@@ -930,7 +1084,7 @@
                     lines.push(`${indent}  - text "${childText}"`);
                 }
             } else {
-                lines.push(...renderTree(child, indent + '  ', refToHref));
+                lines.push(...renderTree(child, indent + '  ', refToHref, name));
             }
         }
         return lines;

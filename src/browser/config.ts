@@ -37,9 +37,10 @@ export function getUserAgent(): string | null {
 }
 
 export function getStealthContextOptions(): Pick<BrowserContextOptions, "locale"> {
-  return {
-    locale: "en-US",
-  };
+  // Return empty — let the browser use the system's real locale.
+  // Hardcoding "en-US" while running in Asia/Shanghai timezone causes
+  // locale-timezone mismatch that fingerprinting services flag.
+  return {};
 }
 
 /**

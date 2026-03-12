@@ -1314,10 +1314,17 @@ export class BrowserSession implements SessionRef {
     }
 
     this._context.addInitScript(() => {
-      // Delete webdriver from Navigator.prototype entirely.
-      // In a normal (non-automated) browser this property does not exist,
-      // so navigator.webdriver evaluates to undefined.
-      delete Object.getPrototypeOf(navigator).webdriver;
+      // In a normal (non-automated) Chrome, navigator.webdriver is false.
+      // Playwright sets it to true. Simply deleting it or setting undefined
+      // is detected by fingerprinters like CreepJS, which flag
+      // `webdriver === undefined` as suspicious on modern browsers.
+      // We must set it to false AND make it non-configurable so CDP
+      // cannot re-define it after our init script runs.
+      Object.defineProperty(Navigator.prototype, 'webdriver', {
+        get: () => false,
+        configurable: false,
+        enumerable: true,
+      });
     });
 
     this._context.on("page", (page) => {
