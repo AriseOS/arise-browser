@@ -27,14 +27,13 @@ export const BrowserConfig = {
   retryDelay: 500,
 } as const;
 
-export function getUserAgent(): string {
-  const platform = process.platform;
-  if (platform === "darwin") {
-    return "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-  } else if (platform === "win32") {
-    return "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
-  }
-  return "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36";
+/**
+ * Returns null to let Chrome use its real User-Agent.
+ * Overriding UA causes mismatch with sec-ch-ua (which Chrome generates
+ * from its actual version), and WAFs like Akamai detect the inconsistency.
+ */
+export function getUserAgent(): string | null {
+  return null;
 }
 
 export function getStealthContextOptions(): Pick<BrowserContextOptions, "locale"> {

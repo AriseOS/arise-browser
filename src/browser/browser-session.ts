@@ -1168,11 +1168,15 @@ export class BrowserSession implements SessionRef {
    */
   private async _launchStandalone(): Promise<Browser> {
     const headless = this._config.headless ?? true;
+    const stealthOpts = {
+      args: ['--disable-blink-features=AutomationControlled'],
+      ignoreDefaultArgs: ['--enable-automation'],
+    };
 
     // Try local Chrome / Edge first
     for (const channel of ["chrome", "msedge"] as const) {
       try {
-        const browser = await chromium.launch({ channel, headless });
+        const browser = await chromium.launch({ channel, headless, ...stealthOpts });
         logger.info({ channel }, "Using local browser");
         return browser;
       } catch {
@@ -1182,7 +1186,7 @@ export class BrowserSession implements SessionRef {
 
     // Fall back to Playwright's bundled Chromium
     logger.info("No local Chrome/Edge found — using Playwright Chromium");
-    return chromium.launch({ headless });
+    return chromium.launch({ headless, ...stealthOpts });
   }
 
   private async _doConnect(): Promise<void> {
@@ -1222,9 +1226,11 @@ export class BrowserSession implements SessionRef {
         this._browser = await this._launchStandalone();
 
         const contextOpts: Record<string, unknown> = {
-          userAgent: ua,
           viewport,
         };
+        if (ua) {
+          contextOpts.userAgent = ua;
+        }
 
         if (this._config.stealthHeaders !== false) {
           Object.assign(contextOpts, getStealthContextOptions());
@@ -1246,9 +1252,13 @@ export class BrowserSession implements SessionRef {
 
         const contextOpts2: Record<string, unknown> = {
           headless: this._config.headless ?? true,
-          userAgent: managedUa,
           viewport: managedViewport,
+          args: ['--disable-blink-features=AutomationControlled'],
+          ignoreDefaultArgs: ['--enable-automation'],
         };
+        if (managedUa) {
+          contextOpts2.userAgent = managedUa;
+        }
 
         if (this._config.stealthHeaders !== false) {
           Object.assign(contextOpts2, getStealthContextOptions());
@@ -1302,6 +1312,13 @@ export class BrowserSession implements SessionRef {
     if (!this._context || this._contextListenersAttached) {
       return;
     }
+
+    this._context.addInitScript(() => {
+      // Delete webdriver from Navigator.prototype entirely.
+      // In a normal (non-automated) browser this property does not exist,
+      // so navigator.webdriver evaluates to undefined.
+      delete Object.getPrototypeOf(navigator).webdriver;
+    });
 
     this._context.on("page", (page) => {
       this._handleNewPage(page).catch((e) =>
