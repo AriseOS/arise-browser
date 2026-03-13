@@ -14,7 +14,7 @@
  */
 
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
-import { BrowserConfig, getStealthContextOptions, getUserAgent } from "./config.js";
+import { BrowserConfig, getStealthContextOptions, getUserAgent, patchHeadlessUserAgent } from "./config.js";
 import { PageSnapshot } from "./page-snapshot.js";
 import { ActionExecutor } from "./action-executor.js";
 import { createLogger } from "../logger.js";
@@ -940,6 +940,8 @@ export class BrowserSession implements SessionRef {
   private _pageListeners = new WeakSet<Page>();
   private _pageRegisteredListeners = new Set<PageRegisteredListener>();
   private _contextListenersAttached = false;
+  /** Patched UA string for CDP-level override (covers Web Workers). */
+  private _patchedUa: string | null = null;
 
   // Tab Groups
   private _tabGroups = new Map<string, TabGroup>();
@@ -1220,10 +1222,25 @@ export class BrowserSession implements SessionRef {
 
       case "standalone": {
         logger.info({ headless: this._config.headless ?? true, sessionId: this._sessionId }, "Launching standalone browser");
-        const ua = this._config.userAgent || getUserAgent();
         const viewport = this._config.viewport || { width: BrowserConfig.viewportWidth, height: BrowserConfig.viewportHeight };
 
         this._browser = await this._launchStandalone();
+
+        // Resolve User-Agent: explicit config > auto-patch headless UA > browser default
+        let ua = this._config.userAgent || getUserAgent();
+        if (!ua && (this._config.headless ?? true)) {
+          // Headless Chrome reports "HeadlessChrome/..." in its default UA.
+          // Open a throwaway context to grab the real UA string, then patch it.
+          const probe = await this._browser.newContext();
+          const probePage = await probe.newPage();
+          const rawUa = await probePage.evaluate(() => navigator.userAgent);
+          await probe.close();
+          if (rawUa.includes("HeadlessChrome")) {
+            ua = patchHeadlessUserAgent(rawUa);
+            this._patchedUa = ua;
+            logger.info({ patched: true }, "Patched headless User-Agent");
+          }
+        }
 
         const contextOpts: Record<string, unknown> = {
           viewport,
@@ -1247,11 +1264,31 @@ export class BrowserSession implements SessionRef {
           throw new Error("profileDir required for 'managed' mode");
         }
         logger.info({ profileDir: this._config.profileDir, sessionId: this._sessionId }, "Launching managed browser");
-        const managedUa = this._config.userAgent || getUserAgent();
+        const managedHeadless = this._config.headless ?? true;
+        let managedUa = this._config.userAgent || getUserAgent();
+
+        // Patch headless UA for managed mode: probe a temporary standalone browser
+        if (!managedUa && managedHeadless) {
+          try {
+            const probeBrowser = await chromium.launch({ channel: "chrome", headless: true });
+            const probeCtx = await probeBrowser.newContext();
+            const probePage = await probeCtx.newPage();
+            const rawUa = await probePage.evaluate(() => navigator.userAgent);
+            await probeBrowser.close();
+            if (rawUa.includes("HeadlessChrome")) {
+              managedUa = patchHeadlessUserAgent(rawUa);
+              this._patchedUa = managedUa;
+              logger.info({ patched: true }, "Patched headless User-Agent (managed)");
+            }
+          } catch {
+            // Probe failed — proceed without UA patch
+          }
+        }
+
         const managedViewport = this._config.viewport || { width: BrowserConfig.viewportWidth, height: BrowserConfig.viewportHeight };
 
         const contextOpts2: Record<string, unknown> = {
-          headless: this._config.headless ?? true,
+          headless: managedHeadless,
           viewport: managedViewport,
           args: ['--disable-blink-features=AutomationControlled'],
           ignoreDefaultArgs: ['--enable-automation'],
@@ -1314,12 +1351,9 @@ export class BrowserSession implements SessionRef {
     }
 
     this._context.addInitScript(() => {
-      // In a normal (non-automated) Chrome, navigator.webdriver is false.
-      // Playwright sets it to true. Simply deleting it or setting undefined
-      // is detected by fingerprinters like CreepJS, which flag
-      // `webdriver === undefined` as suspicious on modern browsers.
-      // We must set it to false AND make it non-configurable so CDP
-      // cannot re-define it after our init script runs.
+      // --- navigator.webdriver ---
+      // Playwright sets navigator.webdriver = true. We override it to false
+      // and make it non-configurable so CDP cannot re-define it.
       Object.defineProperty(Navigator.prototype, 'webdriver', {
         get: () => false,
         configurable: false,

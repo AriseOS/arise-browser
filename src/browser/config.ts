@@ -28,12 +28,25 @@ export const BrowserConfig = {
 } as const;
 
 /**
- * Returns null to let Chrome use its real User-Agent.
- * Overriding UA causes mismatch with sec-ch-ua (which Chrome generates
- * from its actual version), and WAFs like Akamai detect the inconsistency.
+ * Returns null — caller should use {@link patchHeadlessUserAgent} instead.
+ * Kept for backward compatibility with config consumers that check for a
+ * static override.
  */
 export function getUserAgent(): string | null {
   return null;
+}
+
+/**
+ * Fix the User-Agent string that headless Chrome emits.
+ *
+ * Headless Chrome (even with --headless=new) reports
+ *   `HeadlessChrome/<ver>` instead of `Chrome/<ver>`.
+ * Simply replacing that token keeps the version consistent with the
+ * `sec-ch-ua` header Chrome generates from its real binary version,
+ * so WAF-level UA/sec-ch-ua consistency checks still pass.
+ */
+export function patchHeadlessUserAgent(rawUa: string): string {
+  return rawUa.replace(/HeadlessChrome\//g, "Chrome/");
 }
 
 export function getStealthContextOptions(): Pick<BrowserContextOptions, "locale"> {
