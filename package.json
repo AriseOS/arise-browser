@@ -15,6 +15,7 @@
     }
   },
   "scripts": {
+    "prepare": "npm run build",
     "build": "tsc --incremental false && node -e \"const fs=require('fs');fs.cpSync('src/browser/scripts','dist/src/browser/scripts',{recursive:true})\"",
     "dev": "tsc --watch",
     "start": "node dist/bin/arise-browser.js",
