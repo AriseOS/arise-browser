@@ -7,6 +7,8 @@ description: >
   behavior recording with Learn protocol export — built for AI agents that need reliable browser control.
   Use when the task involves: browsing websites, filling forms, clicking buttons, extracting
   page text, taking screenshots, recording workflows, or any browser-based automation.
+  Supports virtual display mode on Linux servers — runs a real headed Chrome with Xvfb + Neko WebRTC
+  streaming, allowing users to watch and interact with the AI-controlled browser in real time.
 homepage: https://github.com/AriseOS/arise-browser
 metadata:
   openclaw:
@@ -19,6 +21,10 @@ metadata:
         ARISE_BROWSER_HEADLESS (optional) - true/false, default true
         ARISE_BROWSER_PROFILE (optional) - Chromium profile directory
         ARISE_BROWSER_BIND (optional) - Bind address, default 127.0.0.1
+        ARISE_BROWSER_VIRTUAL_DISPLAY (optional) - Enable headed mode with Xvfb + Neko (Linux only)
+        ARISE_BROWSER_NEKO_PORT (optional) - Neko WebRTC port, default 6090
+        ARISE_BROWSER_NEKO_PASSWORD (optional, secret) - Neko user password, default "neko"
+        ARISE_BROWSER_NEKO_ADMIN_PASSWORD (optional, secret) - Neko admin password, default "admin"
 ---
 
 # AriseBrowser
@@ -41,7 +47,7 @@ npx arise-browser &
 #    e) Repeat until done
 ```
 
-**Refs are persistent** — AriseBrowser's 3-layer ref system (WeakMap → aria-ref → signature) means refs survive across snapshots. You don't need to re-snapshot before every action.
+**Refs are persistent** — AriseBrowser's 3-layer ref system (WeakMap + aria-ref + signature) means refs survive across snapshots. You don't need to re-snapshot before every action.
 
 ### Recommended Secure Setup
 
@@ -55,6 +61,8 @@ npx arise-browser &
 **Never expose to 0.0.0.0 without a token. Never point at your daily browser profile.**
 
 ## Setup
+
+### Headless Mode (default, any platform)
 
 ```bash
 # Headless (default)
@@ -77,6 +85,58 @@ npx arise-browser --profile ~/.arise-browser/my-profile &
 ```
 
 Default: **port 9867**, no auth required (local). Set `ARISE_BROWSER_TOKEN` for remote access.
+
+### Virtual Display Mode (Linux servers — headed + WebRTC streaming)
+
+Run a real headed Chrome on a headless Linux server. Users watch and interact via Neko WebRTC UI.
+
+```bash
+# 1. Install system dependencies (once, requires root)
+sudo bash deploy/neko/setup.sh
+
+# 2. Start with virtual display
+npx arise-browser --virtual-display --port 9867 --host 0.0.0.0 &
+
+# 3. AI agent uses the API as usual:
+curl -X POST http://localhost:9867/navigate -H 'Content-Type: application/json' -d '{"url":"https://example.com"}'
+
+# 4. Users open Neko in a browser to watch/interact:
+#    http://<server-ip>:6090  (password: neko)
+```
+
+Virtual display mode automatically:
+- Starts Xvfb (virtual X11 display)
+- Starts PulseAudio (virtual audio)
+- Starts Openbox (window manager, maximizes Chrome)
+- Launches Chrome with CDP on localhost:9222
+- Starts Neko server for WebRTC streaming
+- Connects arise-browser to Chrome via CDP
+
+All processes are managed as children of arise-browser — no supervisord needed. Use systemd for production:
+
+```bash
+sudo cp deploy/neko/arise-browser.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now arise-browser
+```
+
+**Ports in virtual display mode:**
+
+| Port | Service | Access |
+|------|---------|--------|
+| 9867 | arise-browser API | AI agent |
+| 6090 | Neko WebRTC UI | User browser |
+| 52000-52100/udp | WebRTC data | User browser |
+| 9222 | Chrome CDP | localhost only |
+
+**Virtual display options:**
+
+```bash
+--virtual-display              # Enable virtual display mode
+--neko-port <port>             # Neko port (default: 6090)
+--neko-password <pwd>          # Neko user password (default: "neko")
+--neko-admin-password <pwd>    # Neko admin password (default: "admin")
+```
 
 ## Core Workflow
 
@@ -192,6 +252,7 @@ Notes:
 | Select support | Full implementation | Empty stub |
 | Behavior Recording | Built-in + Learn protocol export | Not available |
 | Coordinate handling | Viewport-validated | Hardcoded (0,0) |
+| Virtual Display | Xvfb + Neko WebRTC (headed on servers) | Not available |
 | Runtime | Node.js + Playwright | Go + CDP |
 
 ## Token Cost Guide

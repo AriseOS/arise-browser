@@ -1,7 +1,7 @@
 {
   "name": "arise-browser",
-  "version": "0.1.0",
-  "description": "AI browser automation — persistent refs, multi-strategy clicks, behavior recording",
+  "version": "0.2.0",
+  "description": "AI browser automation — persistent refs, multi-strategy clicks, behavior recording, virtual display with WebRTC streaming for headed mode on servers",
   "tools": [
     {
       "name": "arise-browser",
@@ -119,11 +119,29 @@
       "profile": {
         "type": "string",
         "description": "Browser profile directory"
+      },
+      "virtualDisplay": {
+        "type": "boolean",
+        "description": "Enable virtual display mode with Xvfb + Neko WebRTC streaming (Linux only). Runs a real headed Chrome that users can watch and interact with via browser. Requires system dependencies installed via deploy/neko/setup.sh.",
+        "default": false
+      },
+      "nekoPort": {
+        "type": "number",
+        "description": "Neko WebRTC UI port (virtual display mode)",
+        "default": 6090
+      },
+      "nekoPassword": {
+        "type": "string",
+        "description": "Neko viewer password (virtual display mode)"
+      },
+      "nekoAdminPassword": {
+        "type": "string",
+        "description": "Neko admin password (virtual display mode)"
       }
     }
   },
   "lifecycle": {
-    "start": "npx arise-browser --port {{port}} --host {{host}}",
+    "start": "npx arise-browser --port {{port}} --host {{host}}{{#if virtualDisplay}} --virtual-display --neko-port {{nekoPort}} --neko-password {{nekoPassword}} --neko-admin-password {{nekoAdminPassword}}{{/if}}",
     "health": "http://{{host}}:{{port}}/health",
     "stop": "SIGTERM"
   }

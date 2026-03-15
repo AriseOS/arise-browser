@@ -1,7 +1,8 @@
 <p align="center">
   <strong>AriseBrowser</strong><br/>
   Browser engine for AI agents.<br/>
-  Less tokens. Learns from users and agents. Actually clicks the right thing.
+  Less tokens. Learns from users and agents. Actually clicks the right thing.<br/>
+  Headed mode on servers — watch AI browse in real time via WebRTC.
 </p>
 
 <p align="center">
@@ -112,6 +113,33 @@ npx arise-browser --no-headless
 ARISE_BROWSER_TOKEN=secret npx arise-browser --port 8080
 ```
 
+## 6. Headed Mode on Servers — Watch AI Browse Live
+
+Most browser automation runs headless — invisible. That's fine until you need to:
+- **Debug why an agent failed** on a page you can't see
+- **Show a client** what the agent is doing in real time
+- **Bypass anti-bot systems** that detect headless mode
+- **Let users intervene** when the agent gets stuck
+
+AriseBrowser's **virtual display mode** runs a real headed Chrome on any Linux server — no physical monitor needed. Users connect via WebRTC in their browser and see exactly what the AI sees:
+
+```bash
+# Install dependencies (once)
+sudo bash deploy/neko/setup.sh
+
+# Start with virtual display
+npx arise-browser --virtual-display --host 0.0.0.0
+
+# AI agent uses the API as usual
+curl -X POST http://server:9867/navigate -d '{"url":"https://example.com"}'
+
+# Users open http://server:6090 in their browser → live view of Chrome
+```
+
+Behind the scenes, arise-browser spawns and manages: Xvfb (virtual display) → PulseAudio (audio) → Openbox (window manager) → Chrome (CDP) → Neko (WebRTC streaming). One process, no Docker, no supervisord.
+
+**Why not just use headless?** Anti-bot systems increasingly fingerprint headless environments. A headed Chrome running on a real X11 display is indistinguishable from a human using a desktop — because it *is* a real desktop environment.
+
 ## Connection Modes
 
 | Mode | Use Case | Flag |
@@ -119,6 +147,7 @@ ARISE_BROWSER_TOKEN=secret npx arise-browser --port 8080
 | **Standalone** | Launch fresh Chromium | (default) |
 | **CDP** | Connect to running Chrome | `--cdp ws://localhost:9222` |
 | **Managed** | Persistent profile (keeps cookies/logins) | `--profile ~/.browser-profile` |
+| **Virtual Display** | Headed Chrome + WebRTC on Linux server | `--virtual-display` |
 
 ## API
 
@@ -180,6 +209,7 @@ await server.listen({ port: 9867 });
 | Select support | 12 fallback strategies | Empty stub |
 | Behavior recording | Built-in + Learn protocol export | Not available |
 | Multi-agent | Tab locks + session registry | Not available |
+| Headed on servers | Xvfb + Neko WebRTC streaming | Not available |
 | Coordinate handling | Viewport-validated | Hardcoded (0,0) |
 | Runtime | Node.js + Playwright | Go + CDP |
 | Pinchtab compatible | Yes (accepts `kind` field + `BRIDGE_*` env) | — |
@@ -203,6 +233,10 @@ AriseBrowser ships with an [OpenClaw skill](skill/arise-browser/SKILL.md) and [p
 | `ARISE_BROWSER_TOKEN` | `BRIDGE_TOKEN` | (none) |
 | `ARISE_BROWSER_HEADLESS` | — | true |
 | `ARISE_BROWSER_PROFILE` | — | (none) |
+| `ARISE_BROWSER_VIRTUAL_DISPLAY` | — | false |
+| `ARISE_BROWSER_NEKO_PORT` | — | 6090 |
+| `ARISE_BROWSER_NEKO_PASSWORD` | — | neko |
+| `ARISE_BROWSER_NEKO_ADMIN_PASSWORD` | — | admin |
 
 `BRIDGE_*` aliases for Pinchtab drop-in compatibility.
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=AriseBrowser with Virtual Display
+After=network.target
+
+[Service]
+Type=simple
+User=neko
+ExecStart=/usr/bin/node /opt/arise-browser/dist/bin/arise-browser.js --virtual-display --port 9867 --host 0.0.0.0
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

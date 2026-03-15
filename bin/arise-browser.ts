@@ -26,6 +26,7 @@
 
 import { createServer } from "../src/server/server.js";
 import type { AriseBrowserConfig } from "../src/types/index.js";
+import { VirtualDisplayManager } from "../src/virtual-display/manager.js";
 import { readFileSync } from "node:fs";
 
 function getPackageVersion(): string {
@@ -82,12 +83,22 @@ Options:
   --cdp <url>          CDP endpoint URL (cdp mode)
   --help               Show this help
 
+Virtual display mode (Linux server):
+  --virtual-display         Enable Xvfb + Neko streaming
+  --neko-port <port>        Neko HTTP/WS port (default: 6090)
+  --neko-password <pwd>     Neko user password (default: "neko")
+  --neko-admin-password <pwd> Neko admin password (default: "admin")
+
 Environment variables:
   ARISE_BROWSER_PORT / BRIDGE_PORT     Default: 9867
   ARISE_BROWSER_BIND / BRIDGE_BIND     Default: 127.0.0.1
   ARISE_BROWSER_TOKEN / BRIDGE_TOKEN   Auth token
   ARISE_BROWSER_HEADLESS               "true" or "false"
   ARISE_BROWSER_PROFILE                Profile dir (managed mode)
+  ARISE_BROWSER_VIRTUAL_DISPLAY        "true" to enable virtual display
+  ARISE_BROWSER_NEKO_PORT              Neko port (default: 6090)
+  ARISE_BROWSER_NEKO_PASSWORD          Neko user password
+  ARISE_BROWSER_NEKO_ADMIN_PASSWORD    Neko admin password
 `);
   process.exit(0);
 }
@@ -127,9 +138,37 @@ if (hasFlag(["--no-headless"])) {
   headless = false;
 }
 
+// Virtual display mode
+const virtualDisplayEnabled =
+  hasFlag(["--virtual-display"])
+  || process.env.ARISE_BROWSER_VIRTUAL_DISPLAY === "true";
+
+const nekoPort = parseInt(
+  getArg(["--neko-port"])
+    || process.env.ARISE_BROWSER_NEKO_PORT
+    || "6090",
+  10,
+);
+
+const nekoPassword =
+  getArg(["--neko-password"])
+    || process.env.ARISE_BROWSER_NEKO_PASSWORD
+    || "neko";
+
+const nekoAdminPassword =
+  getArg(["--neko-admin-password"])
+    || process.env.ARISE_BROWSER_NEKO_ADMIN_PASSWORD
+    || "admin";
+
 // Determine mode
 let mode: AriseBrowserConfig["mode"] = "standalone";
-if (cdpUrl) {
+let effectiveCdpUrl = cdpUrl;
+
+if (virtualDisplayEnabled) {
+  // Virtual display forces CDP mode — Chrome is launched by VirtualDisplayManager
+  mode = "cdp";
+  effectiveCdpUrl = "http://localhost:9222";
+} else if (cdpUrl) {
   mode = "cdp";
 } else if (profileDir) {
   mode = "managed";
@@ -137,15 +176,36 @@ if (cdpUrl) {
 
 const browserConfig: AriseBrowserConfig = {
   mode,
-  cdpUrl,
+  cdpUrl: effectiveCdpUrl,
   headless,
   profileDir,
   stealthHeaders: true,
+  ...(virtualDisplayEnabled && {
+    virtualDisplay: {
+      enabled: true,
+      nekoPort,
+      nekoPassword,
+      nekoAdminPassword,
+    },
+  }),
 };
 
 async function main() {
   console.log(`AriseBrowser v${PKG_VERSION}`);
   console.log(`Mode: ${mode} | Headless: ${headless} | Port: ${port}`);
+
+  let displayManager: VirtualDisplayManager | null = null;
+
+  // Start virtual display environment before the HTTP server
+  if (virtualDisplayEnabled) {
+    console.log(`Virtual display: enabled (Neko :${nekoPort})`);
+    displayManager = new VirtualDisplayManager({
+      nekoPort,
+      nekoPassword,
+      nekoAdminPassword,
+    });
+    await displayManager.start();
+  }
 
   const server = await createServer(browserConfig, { port, host, token });
 
@@ -156,6 +216,9 @@ async function main() {
     console.log(`Auth: Bearer token required`);
   } else {
     console.log(`Auth: disabled (set ARISE_BROWSER_TOKEN to enable)`);
+  }
+  if (displayManager) {
+    console.log(`Neko streaming on http://0.0.0.0:${nekoPort}`);
   }
 
   // Graceful shutdown with forced exit timeout
@@ -171,14 +234,23 @@ async function main() {
     const forceTimer = setTimeout(() => {
       console.error("Shutdown timed out — forcing exit");
       process.exit(1);
-    }, 10_000);
+    }, 15_000);
     forceTimer.unref();
 
     try {
       await server.close();
     } catch (e) {
-      console.error("Error during shutdown:", e);
+      console.error("Error during server shutdown:", e);
     }
+
+    if (displayManager) {
+      try {
+        await displayManager.stop();
+      } catch (e) {
+        console.error("Error during display shutdown:", e);
+      }
+    }
+
     process.exit(0);
   };
 
