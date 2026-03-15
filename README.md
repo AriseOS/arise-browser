@@ -13,7 +13,34 @@
 
 ---
 
-## 1. Use Fewer Tokens
+## 1. Headed Mode on Servers — Watch AI Browse Live
+
+Most browser automation runs headless — invisible. That's fine until you need to:
+- **Debug why an agent failed** on a page you can't see
+- **Show a client** what the agent is doing in real time
+- **Bypass anti-bot systems** that detect headless mode
+- **Let users intervene** when the agent gets stuck
+
+AriseBrowser's **virtual display mode** runs a real headed Chrome on any Linux server — no physical monitor needed. Users connect via WebRTC in their browser and see exactly what the AI sees:
+
+```bash
+# Install dependencies (once)
+sudo bash deploy/neko/setup.sh
+
+# Start with virtual display
+npx arise-browser --virtual-display --host 0.0.0.0
+
+# AI agent uses the API as usual
+curl -X POST http://server:9867/navigate -d '{"url":"https://example.com"}'
+
+# Users open http://server:6090 in their browser → live view of Chrome
+```
+
+Behind the scenes, arise-browser spawns and manages: Xvfb (virtual display) → PulseAudio (audio) → Openbox (window manager) → Chrome (CDP) → Neko (WebRTC streaming). One process, no Docker, no supervisord.
+
+**Why not just use headless?** Anti-bot systems increasingly fingerprint headless environments. A headed Chrome running on a real X11 display is indistinguishable from a human using a desktop — because it *is* a real desktop environment.
+
+## 2. Use Fewer Tokens
 
 Every token your agent spends reading a page is money. AriseBrowser gives your agent a **compact accessibility snapshot** instead of raw HTML:
 
@@ -23,7 +50,7 @@ Every token your agent spends reading a page is money. AriseBrowser gives your a
 
 Your agent sees what it needs to act, nothing more.
 
-## 2. Learn Once, Automate Forever
+## 3. Learn Once, Automate Forever
 
 AriseBrowser has a built-in **behavior recording** system that captures workflows and exports them as structured traces (Learn protocol). Two ways to teach:
 
@@ -67,7 +94,7 @@ Next time: agent recalls the skill, executes faster, skips exploration
 
 No other browser automation tool does recording + structured export out of the box.
 
-## 3. Actions That Actually Work
+## 4. Actions That Actually Work
 
 Clicking a button sounds simple — until it's inside a custom dropdown, behind an overlay, or opens a new tab. Other tools dispatch a mouse event at coordinates (0,0) and call it a day.
 
@@ -81,7 +108,7 @@ AriseBrowser uses **multi-strategy execution**:
 
 15 action types total: click, type, select, scroll, hover, focus, enter, press_key, navigate, back, forward, wait, extract, mouse_control, mouse_drag.
 
-## 4. Element Refs That Don't Break
+## 5. Element Refs That Don't Break
 
 Other tools generate element IDs per snapshot — navigate away and they're gone. AriseBrowser uses a **3-layer persistent ref system**:
 
@@ -91,11 +118,13 @@ Other tools generate element IDs per snapshot — navigate away and they're gone
 
 Your agent can reference `e42` from 5 actions ago. It still resolves.
 
-## 5. Multi-Agent Ready
+## 6. Multi-Agent Ready
 
 - **Tab Groups** — Organize tabs by task, color-coded
 - **Tab Locks** — TTL-based exclusive access enforced on write routes, prevents two agents from stomping on the same page
 - **Session Registry** — Multiple sessions share one browser
+
+---
 
 ## Quick Start
 
@@ -103,42 +132,15 @@ Your agent can reference `e42` from 5 actions ago. It still resolves.
 npm install
 npm run build
 
-# Headless server on port 9867
+# Headless (default)
 npx arise-browser
 
-# Visible browser
-npx arise-browser --no-headless
+# Headed on server (Linux, requires deploy/neko/setup.sh)
+npx arise-browser --virtual-display --host 0.0.0.0
 
 # With auth token
 ARISE_BROWSER_TOKEN=secret npx arise-browser --port 8080
 ```
-
-## 6. Headed Mode on Servers — Watch AI Browse Live
-
-Most browser automation runs headless — invisible. That's fine until you need to:
-- **Debug why an agent failed** on a page you can't see
-- **Show a client** what the agent is doing in real time
-- **Bypass anti-bot systems** that detect headless mode
-- **Let users intervene** when the agent gets stuck
-
-AriseBrowser's **virtual display mode** runs a real headed Chrome on any Linux server — no physical monitor needed. Users connect via WebRTC in their browser and see exactly what the AI sees:
-
-```bash
-# Install dependencies (once)
-sudo bash deploy/neko/setup.sh
-
-# Start with virtual display
-npx arise-browser --virtual-display --host 0.0.0.0
-
-# AI agent uses the API as usual
-curl -X POST http://server:9867/navigate -d '{"url":"https://example.com"}'
-
-# Users open http://server:6090 in their browser → live view of Chrome
-```
-
-Behind the scenes, arise-browser spawns and manages: Xvfb (virtual display) → PulseAudio (audio) → Openbox (window manager) → Chrome (CDP) → Neko (WebRTC streaming). One process, no Docker, no supervisord.
-
-**Why not just use headless?** Anti-bot systems increasingly fingerprint headless environments. A headed Chrome running on a real X11 display is indistinguishable from a human using a desktop — because it *is* a real desktop environment.
 
 ## Connection Modes
 
@@ -203,13 +205,13 @@ await server.listen({ port: 9867 });
 
 | Feature | AriseBrowser | Pinchtab |
 |---------|-------------|----------|
+| Headed on servers | Xvfb + Neko WebRTC streaming | Not available |
 | Snapshot format | YAML (~50% fewer tokens) + diff mode | JSON |
 | Persistent refs | 3-layer (WeakMap + aria-ref + signature) | Single pass |
 | Click strategy | Multi-strategy with state validation | Single attempt |
 | Select support | 12 fallback strategies | Empty stub |
 | Behavior recording | Built-in + Learn protocol export | Not available |
 | Multi-agent | Tab locks + session registry | Not available |
-| Headed on servers | Xvfb + Neko WebRTC streaming | Not available |
 | Coordinate handling | Viewport-validated | Hardcoded (0,0) |
 | Runtime | Node.js + Playwright | Go + CDP |
 | Pinchtab compatible | Yes (accepts `kind` field + `BRIDGE_*` env) | — |
