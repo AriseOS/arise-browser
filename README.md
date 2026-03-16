@@ -24,8 +24,7 @@ Most browser automation runs headless — invisible. That's fine until you need 
 AriseBrowser's **virtual display mode** runs a real headed Chrome on any Linux server — no physical monitor needed. Users connect via WebRTC in their browser and see exactly what the AI sees:
 
 ```bash
-# Install system dependencies (once, Linux only)
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/AriseOS/arise-browser/main/deploy/neko/setup.sh)
+# Requires Docker — install if missing: curl -fsSL https://get.docker.com | sh
 
 # Start with virtual display
 npx arise-browser --virtual-display --host 0.0.0.0
@@ -36,7 +35,7 @@ curl -X POST http://server:9867/navigate -d '{"url":"https://example.com"}'
 # Users open http://server:6090 in their browser → live view of Chrome
 ```
 
-Behind the scenes, arise-browser spawns and manages: Xvfb (virtual display) → PulseAudio (audio) → Openbox (window manager) → Chrome (CDP) → Neko (WebRTC streaming). One process, no Docker, no supervisord.
+Behind the scenes, arise-browser manages a Docker container (`arise-neko`) running Xvfb + PulseAudio + Openbox + Chrome + Neko WebRTC server, and connects to Chrome inside the container via CDP.
 
 **Why not just use headless?** Anti-bot systems increasingly fingerprint headless environments. A headed Chrome running on a real X11 display is indistinguishable from a human using a desktop — because it *is* a real desktop environment.
 
@@ -135,7 +134,7 @@ npm run build
 # Headless (default)
 npx arise-browser
 
-# Headed on server (Linux, requires deploy/neko/setup.sh)
+# Headed on server (Linux, requires Docker)
 npx arise-browser --virtual-display --host 0.0.0.0
 
 # With auth token
@@ -205,7 +204,7 @@ await server.listen({ port: 9867 });
 
 | Feature | AriseBrowser | Pinchtab |
 |---------|-------------|----------|
-| Headed on servers | Xvfb + Neko WebRTC streaming | Not available |
+| Headed on servers | Docker Neko + WebRTC streaming | Not available |
 | Snapshot format | YAML (~50% fewer tokens) + diff mode | JSON |
 | Persistent refs | 3-layer (WeakMap + aria-ref + signature) | Single pass |
 | Click strategy | Multi-strategy with state validation | Single attempt |

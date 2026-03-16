@@ -6,9 +6,9 @@ AI browser automation engine extracted from arise-desktop's browser control laye
 
 - **Core library** (`src/browser/`): BrowserSession, ActionExecutor, PageSnapshot, BehaviorRecorder
 - **HTTP server** (`src/server/`): Fastify-based REST API, Pinchtab-compatible endpoints
-- **Virtual display** (`src/virtual-display/`): VirtualDisplayManager for Linux server deployment (Xvfb + Neko)
+- **Virtual display** (`src/virtual-display/`): VirtualDisplayManager for Linux server deployment (Docker Neko container)
 - **CLI** (`bin/arise-browser.ts`): `npx arise-browser` entry point
-- **Deploy configs** (`deploy/neko/`): Xorg, PulseAudio, Openbox, Neko, Chrome policies, systemd, setup script
+- **Deploy configs** (`deploy/neko/`): Dockerfile, supervisord.conf, Chrome policies, systemd, setup script
 - **OpenClaw** (`skill/`, `plugin/`): Skill definition + plugin manifest
 
 ## Connection Modes
@@ -22,7 +22,7 @@ AI browser automation engine extracted from arise-desktop's browser control laye
 
 ### Virtual Display Mode
 
-`--virtual-display` starts Xvfb + PulseAudio + Openbox + Chrome + Neko as child processes, then connects via CDP. Users watch/control the browser through Neko's WebRTC UI (port 6090). See `deploy/neko/CONTEXT.md` for details.
+`--virtual-display` starts a Docker container (`arise-neko`) running Xvfb + PulseAudio + Openbox + Chrome + Neko, then connects via CDP. Users watch/control the browser through Neko's WebRTC UI (port 6090). See `deploy/neko/CONTEXT.md` for details.
 
 ## Key Differentiators (vs Pinchtab)
 
@@ -51,8 +51,8 @@ PageSnapshot caches the `elements` map (ref → {name, role}) from unified_analy
 | `src/logger.ts` | Injectable logger interface + pino default |
 | `src/lock.ts` | In-memory tab lock for multi-agent coordination |
 | `src/types/index.ts` | All public type definitions (SessionRef, ActionResult, TabInfo, etc.) |
-| `src/virtual-display/manager.ts` | VirtualDisplayManager — orchestrates Xvfb/PulseAudio/Openbox/Chrome/Neko |
-| `src/virtual-display/process-runner.ts` | Child process runner with auto-restart and readiness checks |
+| `src/virtual-display/manager.ts` | VirtualDisplayManager — manages Docker Neko container, connects via CDP |
+| `src/virtual-display/process-runner.ts` | Child process runner (legacy, retained for potential non-Docker fallback) |
 
 ## API Endpoints
 

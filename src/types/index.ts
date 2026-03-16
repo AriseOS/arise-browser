@@ -28,16 +28,16 @@ export interface AriseBrowserConfig {
   /** Apply safe stealth context options (default true) */
   stealthHeaders?: boolean;
 
-  /** Virtual display mode (Linux server) */
+  /** Virtual display mode (Docker Neko container) */
   virtualDisplay?: {
     enabled: boolean;
-    display?: string;
-    screen?: string;
     nekoPort?: number;
     nekoPassword?: string;
     nekoAdminPassword?: string;
     chromeDebugPort?: number;
-    chromePath?: string;
+    screen?: string;
+    containerName?: string;
+    imageName?: string;
   };
 }
 

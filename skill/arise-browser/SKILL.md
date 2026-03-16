@@ -1,83 +1,74 @@
 ---
 name: arise-browser
 description: >
-  Control a Chromium browser via HTTP API for web automation — browsing, form filling, clicking,
-  text extraction, screenshots, and workflow recording. Uses persistent element refs that survive
-  across snapshots, multi-strategy click fallbacks, and YAML accessibility tree snapshots optimized
-  for low token usage. Supports headless mode (any platform) and headed virtual display mode with
-  WebRTC live streaming (Linux servers). Use when the task involves any browser-based interaction.
+  Browser automation for AI agents — control Chrome via HTTP API with persistent element refs,
+  YAML accessibility snapshots, and WebRTC live streaming via Neko. Install once, navigate/snapshot/act loop.
 homepage: https://github.com/AriseOS/arise-browser
 metadata:
   openclaw:
-    emoji: "🚀"
+    emoji: "🌐"
     requires:
       bins: ["npx"]
 ---
 
 # AriseBrowser
 
-Browser automation for AI agents via HTTP API. Persistent refs, multi-strategy clicks, behavior recording.
+Control a real Chrome browser via HTTP API. See what the browser sees, click/type/scroll on elements using persistent refs.
 
-## Step 1: Install
+## Step 1: Install & Start
+
+### Check prerequisites
 
 ```bash
-# Install globally (makes `arise-browser` command available)
+# Docker required (Neko runs Chrome + WebRTC streaming inside a container)
+docker --version || echo "MISSING: Install Docker first — https://get.docker.com"
+
+# Node.js required
+node --version || echo "MISSING: Install Node.js 20+ — https://nodejs.org"
+```
+
+If Docker is missing, install it:
+```bash
+curl -fsSL https://get.docker.com | sh
+```
+
+### Install and start
+
+```bash
 npm install -g arise-browser
+npx arise-browser --virtual-display --port 9867 --host 0.0.0.0 &
 ```
 
-Or use `npx arise-browser` to run without global install — npm downloads it automatically.
-
-### Virtual Display Mode (optional, Linux servers only)
-
-If you need **headed mode** on a headless Linux server (real Chrome with Xvfb + WebRTC streaming so users can watch), install system dependencies first:
-
-```bash
-# Check if we're on Linux and headed mode is needed
-uname -s  # Must be "Linux"
-
-# Install Xvfb, Chrome, Neko, PulseAudio, Openbox, GStreamer, fonts
-sudo bash <(curl -fsSL https://raw.githubusercontent.com/AriseOS/arise-browser/main/deploy/neko/setup.sh)
-```
-
-This is only needed once per server. Skip this for headless mode.
-
-## Step 2: Start the Server
-
-```bash
-# Headless mode (default, works everywhere)
-npx arise-browser --port 9867 &
-
-# Headed virtual display mode (Linux only, after setup.sh)
-npx arise-browser --virtual-display --port 9867 --host 0.0.0.0 \
-  --neko-port 6090 --neko-password "neko" --neko-admin-password "admin" &
-```
-
-Wait for the server to be ready:
-
+Wait for ready:
 ```bash
 until curl -s http://localhost:9867/health > /dev/null 2>&1; do sleep 1; done
-```
-
-Verify:
-
-```bash
 curl http://localhost:9867/health
-# → {"status":"ok","connected":true,"version":"0.1.0"}
+# → {"status":"ok","connected":true}
 ```
 
-In virtual display mode, users can open `http://<server>:6090` in their browser to watch and interact with Chrome via WebRTC (password: "neko").
+First run takes ~2 minutes (Docker pulls the Neko Chrome image ~700MB).
 
-## Step 3: Use the API
+### Tell the user
+
+After installation succeeds, inform the user:
+
+1. **Firewall**: Open these ports in your cloud security group:
+   - `9867/tcp` — arise-browser API
+   - `6090/tcp` — Neko WebRTC UI (browser live view)
+   - `52000-52100/udp` — WebRTC media data
+2. **Watch the browser**: Open `http://<server-ip>:6090` in your browser, password: `neko`
+3. **HTTPS (optional)**: For production, put a reverse proxy in front. Recommended: [Caddy](https://caddyserver.com/) with `tls internal` (self-signed, no domain needed) or your own domain for auto Let's Encrypt.
+4. **Passwords**: Default Neko passwords are `neko` (viewer) and `admin` (admin). Change via `--neko-password` and `--neko-admin-password` flags.
+
+## Step 2: Use the Browser
 
 Base URL: `http://localhost:9867`
 
-Every browser task follows this loop:
+Every task follows this loop:
 
 ```
 Navigate → Snapshot → Act → Snapshot → Act → ... → Done
 ```
-
-Refs (e0, e5, e12...) are **persistent** across snapshots. No need to re-snapshot before every action.
 
 ### Navigate
 
@@ -87,27 +78,28 @@ curl -X POST http://localhost:9867/navigate \
   -d '{"url": "https://example.com"}'
 ```
 
-### Snapshot (Get Page State)
+### Snapshot (get page state)
+
+Returns a YAML accessibility tree with element refs (e0, e5, e12...).
 
 ```bash
-# YAML (default, lowest token cost)
+# Full snapshot
 curl http://localhost:9867/snapshot
 
-# Diff mode — only changes since last snapshot
+# Diff mode — only changes since last snapshot (saves tokens)
 curl "http://localhost:9867/snapshot?diff=true"
-
-# JSON format
-curl "http://localhost:9867/snapshot?format=json"
 ```
 
-### Actions
+### Act on elements
+
+Use refs from the snapshot. Refs are **persistent** — they survive across snapshots, no need to re-snapshot before reusing a ref.
 
 ```bash
 # Click
 curl -X POST http://localhost:9867/action -H "Content-Type: application/json" \
   -d '{"type": "click", "ref": "e5"}'
 
-# Type
+# Type text
 curl -X POST http://localhost:9867/action -H "Content-Type: application/json" \
   -d '{"type": "type", "ref": "e12", "text": "search query"}'
 
@@ -128,37 +120,7 @@ curl -X POST http://localhost:9867/action -H "Content-Type: application/json" \
   -d '{"type": "select", "ref": "e3", "value": "option1"}'
 ```
 
-### Batch Actions
-
-```bash
-curl -X POST http://localhost:9867/actions -H "Content-Type: application/json" \
-  -d '{"actions": [
-    {"type": "click", "ref": "e5"},
-    {"type": "type", "ref": "e12", "text": "hello"},
-    {"type": "press_key", "key": "Enter"}
-  ], "stopOnError": true}'
-```
-
-### Tabs
-
-```bash
-# List
-curl http://localhost:9867/tabs
-
-# Create
-curl -X POST http://localhost:9867/tab -H "Content-Type: application/json" \
-  -d '{"action": "create", "url": "https://example.com"}'
-
-# Switch
-curl -X POST http://localhost:9867/tab -H "Content-Type: application/json" \
-  -d '{"action": "switch", "tabId": "tab-001"}'
-
-# Close
-curl -X POST http://localhost:9867/tab -H "Content-Type: application/json" \
-  -d '{"action": "close", "tabId": "tab-001"}'
-```
-
-### Content Extraction
+### Extract content
 
 ```bash
 # Page text
@@ -167,59 +129,37 @@ curl http://localhost:9867/text
 # Screenshot (JPEG)
 curl http://localhost:9867/screenshot > screenshot.jpg
 
-# PDF
-curl http://localhost:9867/pdf > page.pdf
-
 # Execute JavaScript
 curl -X POST http://localhost:9867/evaluate -H "Content-Type: application/json" \
   -d '{"expression": "document.title"}'
 ```
 
-### Recording (Capture Workflow)
+## Step 3: Stop
 
 ```bash
-# Start
-curl -X POST http://localhost:9867/recording/start
-# → {"recordingId": "session_..."}
-
-# ... perform actions ...
-
-# Stop
-curl -X POST http://localhost:9867/recording/stop -H "Content-Type: application/json" \
-  -d '{"recordingId": "session_..."}'
-
-# Export as structured trace
-curl -X POST http://localhost:9867/recording/export -H "Content-Type: application/json" \
-  -d '{"recordingId": "session_...", "task": "Book a meeting room"}'
-```
-
-## Step 4: Stop the Server
-
-```bash
-# Find and stop
 kill $(pgrep -f "arise-browser")
 ```
 
-Or send SIGTERM to the process. All child processes (Xvfb, Chrome, Neko...) are cleaned up automatically.
-
-## Troubleshooting
-
-| Problem | Fix |
-|---------|-----|
-| `npx arise-browser` hangs | Playwright downloading Chromium — wait, first run takes ~1 min |
-| Health returns `connected: false` | Chrome crashed or hasn't started — restart arise-browser |
-| Virtual display: "Chrome not found" | Run `setup.sh` first, or install Chrome/Chromium |
-| Virtual display: Neko timeout | Check that ports 6090 and 52000-52100/udp are open |
-| Action returns error | Snapshot first to get valid refs, then act on them |
+The Docker container is automatically stopped and cleaned up.
 
 ## Tips
 
 - Use `?diff=true` after the first snapshot to save tokens.
 - Refs persist across snapshots — don't re-snapshot just to reuse a ref.
-- Use `tabId` on any endpoint to target a specific tab without switching.
-- Batch actions when you have a sequence that doesn't need intermediate snapshots.
-- Actions accept both `type` and `kind` field names (`kind: "click"` also works).
+- Batch actions: `POST /actions` with `{"actions": [...], "stopOnError": true}`.
+- Tabs: `GET /tabs`, `POST /tab` with `{"action": "create|switch|close"}`.
+- Use `tabId` param on any endpoint to target a specific tab without switching.
+
+## Troubleshooting
+
+| Problem | Fix |
+|---------|-----|
+| First run slow | Docker pulling Neko image (~700MB), wait ~2 min |
+| Health returns `connected: false` | Chrome crashed — restart arise-browser |
+| Neko UI loads but no video | Open UDP 52000-52100 in firewall/security group |
+| Neko UI click no response | Use admin password `admin`, or restart container (implicit hosting enabled) |
+| Action returns error | Snapshot first to get valid refs, then act |
 
 ## Full API Reference
 
-See [references/api.md](references/api.md) for complete endpoint documentation with all parameters.
+See [references/api.md](references/api.md) for all endpoints, parameters, and advanced features (recording, PDF export, batch actions).

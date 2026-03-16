@@ -1,37 +1,38 @@
 # deploy/neko/
 
-Configuration files for running arise-browser with Neko streaming on Linux servers.
+Docker-based Neko integration for running arise-browser with a visible browser on Linux servers.
 
 ## Architecture
 
-arise-browser is the single entry process managing all child processes:
-Xvfb (virtual display) -> PulseAudio (virtual audio) -> Openbox (window manager) -> Chrome (CDP) -> Neko (WebRTC streaming)
+arise-browser manages a single Docker container (`arise-neko`) that bundles Xvfb + PulseAudio + Openbox + Chrome + Neko WebRTC server. arise-browser connects to Chrome inside the container via CDP.
 
-No supervisord — arise-browser's VirtualDisplayManager handles process lifecycle.
+```
+arise-browser (Node.js, host)
+  ├── docker run arise-neko
+  │     └── supervisord: Xorg, PulseAudio, Openbox, Chrome (CDP :9222), Neko (:8080)
+  ├── Playwright connectOverCDP(localhost:9222)
+  └── Fastify HTTP Server (:9867)
+```
 
 ## Files
 
-| File | Source | Purpose |
-|------|--------|---------|
-| `xorg.conf` | neko/runtime/xorg.conf | X11 virtual display with multiple resolution modes |
-| `pulseaudio.pa` | neko/runtime/default.pa | Virtual audio sinks for Neko |
-| `openbox.xml` | neko/apps/google-chrome/openbox.xml | Window manager: no decorations, maximized Chrome |
-| `neko.yaml` | Custom | Neko server defaults (overridden by CLI args via env vars) |
-| `policies.json` | Modified from neko | Chrome policies: CDP enabled, popups allowed |
-| `arise-browser.service` | Custom | systemd unit file |
-| `setup.sh` | Custom | One-shot dependency installer (Debian/Ubuntu + CentOS/RHEL) |
+| File | Purpose |
+|------|---------|
+| `Dockerfile` | Custom image based on `ghcr.io/m1k1o/neko/google-chrome:latest`, adds CDP support |
+| `supervisord.conf` | Chrome launch config with `--remote-debugging-port=9222` |
+| `policies.json` | Chrome managed policies (allow CDP, popups, disable autofill) |
+| `arise-browser.service` | systemd unit (requires docker.service) |
+| `setup.sh` | One-shot installer: Docker + Node.js + image build |
 
 ## Port Allocation
 
-| Service | Port | Exposure |
-|---------|------|----------|
-| Neko HTTP/WS | 6090 | Public (user WebRTC) |
-| WebRTC UDP | 52000-52100 | Public (data channel) |
-| arise-browser | 9867 | As needed (AI agent API) |
-| Chrome CDP | 9222 | localhost only |
+| Service | Host Port | Container Port | Exposure |
+|---------|-----------|----------------|----------|
+| Neko HTTP/WS | 6090 | 8080 | Public (WebRTC UI) |
+| Chrome CDP | 9222 | 9222 | localhost only |
+| WebRTC UDP | 52000-52100 | 52000-52100 | Public |
+| arise-browser | 9867 | — | As needed (API) |
 
-## Key Differences from Neko Defaults
+## Persistent Profile
 
-- `policies.json`: `DeveloperToolsAvailability: 0` (allow CDP), `DefaultPopupsSetting: 1` (allow popups)
-- No forced browser extensions (uBlock Origin, Dark Reader removed)
-- `neko.yaml`: `implicit_hosting: true` (auto-assign host to first user)
+Chrome profile is stored in a Docker named volume (`arise-neko-profile`) mounted at `/home/neko/.config/google-chrome`.

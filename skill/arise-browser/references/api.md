@@ -9,7 +9,7 @@ Returns server status.
 
 Response:
 ```json
-{"status": "ok", "connected": true, "version": "0.1.0"}
+{"status": "ok", "connected": true, "version": "0.2.0"}
 ```
 
 ## Navigation

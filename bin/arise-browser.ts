@@ -83,11 +83,13 @@ Options:
   --cdp <url>          CDP endpoint URL (cdp mode)
   --help               Show this help
 
-Virtual display mode (Linux server):
-  --virtual-display         Enable Xvfb + Neko streaming
+Virtual display mode (Docker Neko):
+  --virtual-display         Enable Docker Neko container
   --neko-port <port>        Neko HTTP/WS port (default: 6090)
   --neko-password <pwd>     Neko user password (default: "neko")
   --neko-admin-password <pwd> Neko admin password (default: "admin")
+  --container-name <name>   Docker container name (default: "arise-neko")
+  --image-name <name>       Docker image name (default: "arise-neko")
 
 Environment variables:
   ARISE_BROWSER_PORT / BRIDGE_PORT     Default: 9867
@@ -95,10 +97,12 @@ Environment variables:
   ARISE_BROWSER_TOKEN / BRIDGE_TOKEN   Auth token
   ARISE_BROWSER_HEADLESS               "true" or "false"
   ARISE_BROWSER_PROFILE                Profile dir (managed mode)
-  ARISE_BROWSER_VIRTUAL_DISPLAY        "true" to enable virtual display
+  ARISE_BROWSER_VIRTUAL_DISPLAY        "true" to enable Docker Neko
   ARISE_BROWSER_NEKO_PORT              Neko port (default: 6090)
   ARISE_BROWSER_NEKO_PASSWORD          Neko user password
   ARISE_BROWSER_NEKO_ADMIN_PASSWORD    Neko admin password
+  ARISE_BROWSER_CONTAINER_NAME         Container name (default: "arise-neko")
+  ARISE_BROWSER_IMAGE_NAME             Image name (default: "arise-neko")
 `);
   process.exit(0);
 }
@@ -160,6 +164,16 @@ const nekoAdminPassword =
     || process.env.ARISE_BROWSER_NEKO_ADMIN_PASSWORD
     || "admin";
 
+const containerName =
+  getArg(["--container-name"])
+    || process.env.ARISE_BROWSER_CONTAINER_NAME
+    || "arise-neko";
+
+const imageName =
+  getArg(["--image-name"])
+    || process.env.ARISE_BROWSER_IMAGE_NAME
+    || "arise-neko";
+
 // Determine mode
 let mode: AriseBrowserConfig["mode"] = "standalone";
 let effectiveCdpUrl = cdpUrl;
@@ -186,6 +200,8 @@ const browserConfig: AriseBrowserConfig = {
       nekoPort,
       nekoPassword,
       nekoAdminPassword,
+      containerName,
+      imageName,
     },
   }),
 };
@@ -203,6 +219,8 @@ async function main() {
       nekoPort,
       nekoPassword,
       nekoAdminPassword,
+      containerName,
+      imageName,
     });
     await displayManager.start();
   }

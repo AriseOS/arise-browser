@@ -122,7 +122,7 @@
       },
       "virtualDisplay": {
         "type": "boolean",
-        "description": "Enable virtual display mode with Xvfb + Neko WebRTC streaming (Linux only). Runs a real headed Chrome that users can watch and interact with via browser. Requires system dependencies installed via deploy/neko/setup.sh.",
+        "description": "Enable Docker Neko virtual display (Linux). Runs a real headed Chrome inside a Docker container with WebRTC streaming so users can watch and interact via browser.",
         "default": false
       },
       "nekoPort": {

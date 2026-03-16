@@ -1,21 +1,22 @@
 /**
- * VirtualDisplayManager — manages Xvfb, PulseAudio, Openbox, Chrome, and Neko
- * as child processes for Linux cloud server deployment.
+ * VirtualDisplayManager — manages a Docker container running Neko
+ * (Xvfb + PulseAudio + Openbox + Chrome + Neko WebRTC) for cloud server deployment.
  *
- * arise-browser is the single entry process; no supervisord needed.
+ * arise-browser controls the container via `docker` CLI and connects to Chrome via CDP.
  */
 
-import { existsSync } from "node:fs";
+import { execFile } from "node:child_process";
 import { resolve, dirname, join } from "node:path";
+import { existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { createLogger } from "../logger.js";
-import { ProcessRunner } from "./process-runner.js";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
+const log = createLogger("virtual-display");
+
 /**
  * Find the package root by walking up from __dirname to find package.json.
- * Works both in src/ (dev) and dist/ (compiled).
  */
 function findPackageRoot(): string {
   let dir = __dirname;
@@ -23,74 +24,79 @@ function findPackageRoot(): string {
     if (existsSync(join(dir, "package.json"))) return dir;
     dir = dirname(dir);
   }
-  // Fallback: assume 2 levels up from src/virtual-display or dist/src/virtual-display
   return resolve(__dirname, "../..");
 }
 
 export interface VirtualDisplayConfig {
-  /** X11 display number (default ":99") */
-  display: string;
-  /** Screen resolution+depth (default "1920x1080x24") */
-  screen: string;
-  /** Neko HTTP/WS port (default 6090) */
+  /** Neko HTTP/WS port on host (default 6090) */
   nekoPort: number;
   /** Neko user password (default "neko") */
   nekoPassword: string;
   /** Neko admin password (default "admin") */
   nekoAdminPassword: string;
-  /** Chrome remote debugging port (default 9222) */
+  /** Chrome CDP port on host (default 9222) */
   chromeDebugPort: number;
-  /** Path to Chrome binary (auto-detected if omitted) */
-  chromePath: string;
+  /** Screen resolution (default "1920x1080@30") */
+  screen: string;
+  /** Docker container name (default "arise-neko") */
+  containerName: string;
+  /** Docker image name (default "arise-neko") */
+  imageName: string;
 }
 
 const DEFAULT_CONFIG: VirtualDisplayConfig = {
-  display: ":99",
-  screen: "1920x1080x24",
   nekoPort: 6090,
   nekoPassword: "neko",
   nekoAdminPassword: "admin",
   chromeDebugPort: 9222,
-  chromePath: "",
+  screen: "1920x1080@30",
+  containerName: "arise-neko",
+  imageName: "arise-neko",
 };
 
-const CHROME_CANDIDATES = [
-  "/usr/bin/google-chrome-stable",
-  "/usr/bin/google-chrome",
-  "/usr/bin/chromium-browser",
-  "/usr/bin/chromium",
-];
+/** Run a command and return stdout. Rejects on non-zero exit. */
+function exec(
+  cmd: string,
+  args: string[],
+  timeoutMs = 30_000,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    execFile(cmd, args, { timeout: timeoutMs }, (err, stdout, stderr) => {
+      if (err) {
+        const msg = stderr?.trim() || stdout?.trim() || err.message;
+        reject(new Error(`${cmd} ${args[0]}: ${msg}`));
+      } else {
+        resolve(stdout.trim());
+      }
+    });
+  });
+}
 
-function findChrome(): string {
-  for (const candidate of CHROME_CANDIDATES) {
-    if (existsSync(candidate)) return candidate;
+/** Poll a URL until it returns 2xx or timeout. */
+async function waitForHttp(
+  url: string,
+  timeoutMs: number,
+  intervalMs = 500,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) return;
+    } catch {
+      // not ready yet
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
   }
-  throw new Error(
-    `Chrome not found. Tried: ${CHROME_CANDIDATES.join(", ")}. Install Chrome or set chromePath.`,
-  );
+  throw new Error(`Timed out waiting for ${url} (${timeoutMs}ms)`);
 }
-
-/** Resolve path to deploy/neko/ config files */
-function deployPath(filename: string): string {
-  return resolve(findPackageRoot(), "deploy/neko", filename);
-}
-
-const log = createLogger("virtual-display");
 
 export class VirtualDisplayManager {
-  private _xvfb: ProcessRunner | null = null;
-  private _pulseaudio: ProcessRunner | null = null;
-  private _openbox: ProcessRunner | null = null;
-  private _chrome: ProcessRunner | null = null;
-  private _neko: ProcessRunner | null = null;
   private _started = false;
   private readonly _config: VirtualDisplayConfig;
 
   constructor(config?: Partial<VirtualDisplayConfig>) {
     this._config = { ...DEFAULT_CONFIG, ...config };
-    if (!this._config.chromePath) {
-      this._config.chromePath = findChrome();
-    }
   }
 
   get config(): VirtualDisplayConfig {
@@ -104,132 +110,97 @@ export class VirtualDisplayManager {
   async start(): Promise<void> {
     if (this._started) return;
 
-    const { display, screen, nekoPort, nekoPassword, nekoAdminPassword, chromeDebugPort, chromePath } = this._config;
-    // Extract display number: ":99" → "99", ":99.0" → "99"
-    const displayNum = display.replace(/^:/, "").split(".")[0];
-    const displayEnv = { DISPLAY: display };
+    const {
+      nekoPort,
+      nekoPassword,
+      nekoAdminPassword,
+      chromeDebugPort,
+      screen,
+      containerName,
+      imageName,
+    } = this._config;
 
     log.info(
-      `Starting virtual display environment (display=${display}, chrome=${chromePath}, neko=:${nekoPort})`,
+      `Starting Docker container "${containerName}" (neko=:${nekoPort}, cdp=:${chromeDebugPort})`,
     );
 
+    // Ensure no stale container exists
     try {
-      // 1. Xvfb — does NOT support -config (that's Xorg, not Xvfb)
-      // Xvfb has a built-in dummy driver, no xorg.conf needed
-      const xvfbArgs = [display, "-screen", "0", screen, "-nolisten", "tcp"];
+      await exec("docker", ["rm", "-f", containerName]);
+    } catch {
+      // container didn't exist, fine
+    }
 
-      this._xvfb = new ProcessRunner({
-        name: "xvfb",
-        command: "/usr/bin/Xvfb",
-        args: xvfbArgs,
-        readiness: {
-          type: "file",
-          target: `/tmp/.X11-unix/X${displayNum}`,
-          timeoutMs: 10_000,
-        },
-      });
-      await this._xvfb.start();
+    // Build image if not present
+    const deployDir = resolve(findPackageRoot(), "deploy/neko");
+    try {
+      await exec("docker", ["image", "inspect", imageName]);
+      log.info(`Docker image "${imageName}" found`);
+    } catch {
+      log.info(`Building Docker image "${imageName}" from ${deployDir}...`);
+      await exec("docker", ["build", "-t", imageName, deployDir], 120_000);
+      log.info(`Docker image "${imageName}" built`);
+    }
 
-      // 2. PulseAudio
-      const pulseConf = deployPath("pulseaudio.pa");
-      this._pulseaudio = new ProcessRunner({
-        name: "pulseaudio",
-        command: "/usr/bin/pulseaudio",
-        args: [
-          "--disallow-exit",
-          "--disallow-module-loading",
-          "-n",
-          "-F",
-          pulseConf,
-          "--exit-idle-time=-1",
-        ],
-        readiness: {
-          type: "file",
-          target: "/tmp/pulseaudio.socket",
-          timeoutMs: 10_000,
-        },
-      });
-      await this._pulseaudio.start();
+    // docker run
+    const runArgs = [
+      "run",
+      "-d",
+      "--name",
+      containerName,
+      "--shm-size=2gb",
+      // Port mappings
+      "-p",
+      `${nekoPort}:8080`,
+      "-p",
+      `127.0.0.1:${chromeDebugPort}:9223`,
+      "-p",
+      "52000-52100:52000-52100/udp",
+      // Persistent Chrome profile via named volume
+      "-v",
+      `${containerName}-profile:/home/neko/.config/arise-chrome`,
+      // Neko environment
+      "-e",
+      `NEKO_DESKTOP_SCREEN=${screen}`,
+      "-e",
+      `NEKO_MEMBER_MULTIUSER_USER_PASSWORD=${nekoPassword}`,
+      "-e",
+      `NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD=${nekoAdminPassword}`,
+      "-e",
+      "NEKO_WEBRTC_EPR=52000-52100",
+      "-e",
+      "NEKO_WEBRTC_ICELITE=1",
+      "-e",
+      "NEKO_SESSION_IMPLICIT_HOSTING=true",
+      imageName,
+    ];
 
-      // 3. Openbox
-      const openboxConf = deployPath("openbox.xml");
-      this._openbox = new ProcessRunner({
-        name: "openbox",
-        command: "/usr/bin/openbox",
-        args: existsSync(openboxConf)
-          ? ["--config-file", openboxConf]
-          : [],
-        env: displayEnv,
-      });
-      await this._openbox.start();
+    try {
+      const containerId = await exec("docker", runArgs, 30_000);
+      log.info(`Container started: ${containerId.slice(0, 12)}`);
 
-      // Small delay for window manager to initialize
-      await new Promise((r) => setTimeout(r, 500));
+      // Wait for Neko health
+      log.info("Waiting for Neko health...");
+      await waitForHttp(`http://localhost:${nekoPort}/health`, 30_000);
+      log.info("Neko is healthy");
 
-      // 4. Chrome
-      this._chrome = new ProcessRunner({
-        name: "chrome",
-        command: chromePath,
-        args: [
-          `--remote-debugging-port=${chromeDebugPort}`,
-          `--user-data-dir=${join(process.env.HOME || "/root", ".arise-browser", "chrome-profile")}`,
-          `--display=${display}`,
-          "--window-position=0,0",
-          "--no-first-run",
-          "--start-maximized",
-          "--bwsi",
-          "--force-dark-mode",
-          "--disable-file-system",
-          "--disable-gpu",
-          "--disable-software-rasterizer",
-          "--disable-dev-shm-usage",
-          "--no-sandbox",
-          "--disable-setuid-sandbox",
-        ],
-        env: {
-          ...displayEnv,
-          PULSE_SERVER: "unix:/tmp/pulseaudio.socket",
-        },
-        readiness: {
-          type: "http",
-          target: `http://localhost:${chromeDebugPort}/json/version`,
-          timeoutMs: 15_000,
-        },
-      });
-      await this._chrome.start();
-
-      // 5. Neko Server
-      this._neko = new ProcessRunner({
-        name: "neko",
-        command: "/usr/local/bin/neko",
-        args: ["serve", "--bind", `0.0.0.0:${nekoPort}`],
-        env: {
-          ...displayEnv,
-          PULSE_SERVER: "unix:/tmp/pulseaudio.socket",
-          // Convert Xvfb format "1920x1080x24" → Neko format "1920x1080@30"
-          NEKO_DESKTOP_SCREEN: screen.replace(/x\d+$/, "@30"),
-          NEKO_MEMBER_PROVIDER: "multiuser",
-          NEKO_MEMBER_MULTIUSER_ADMIN_PASSWORD: nekoAdminPassword,
-          NEKO_MEMBER_MULTIUSER_USER_PASSWORD: nekoPassword,
-          NEKO_SESSION_IMPLICIT_HOSTING: "true",
-          NEKO_SESSION_MERCIFUL_RECONNECT: "true",
-        },
-        readiness: {
-          type: "http",
-          target: `http://localhost:${nekoPort}/health`,
-          timeoutMs: 15_000,
-          intervalMs: 500,
-        },
-      });
-      await this._neko.start();
+      // Wait for Chrome CDP
+      log.info("Waiting for Chrome CDP...");
+      await waitForHttp(
+        `http://localhost:${chromeDebugPort}/json/version`,
+        30_000,
+      );
+      log.info("Chrome CDP is ready");
 
       this._started = true;
       log.info("Virtual display environment started successfully");
     } catch (err) {
-      // Clean up any processes that started before the failure
-      log.error({ err }, "Failed to start virtual display environment, cleaning up");
-      this._started = true; // Allow stop() to run
-      await this.stop();
+      log.error({ err }, "Failed to start virtual display, cleaning up");
+      try {
+        await exec("docker", ["rm", "-f", containerName]);
+      } catch {
+        // best effort
+      }
       throw err;
     }
   }
@@ -237,34 +208,22 @@ export class VirtualDisplayManager {
   async stop(): Promise<void> {
     if (!this._started) return;
 
-    log.info("Stopping virtual display environment...");
+    const { containerName } = this._config;
+    log.info(`Stopping container "${containerName}"...`);
 
-    // Stop in reverse order
-    const processes = [
-      this._neko,
-      this._chrome,
-      this._openbox,
-      this._pulseaudio,
-      this._xvfb,
-    ];
-
-    for (const proc of processes) {
-      if (proc) {
-        try {
-          await proc.stop();
-        } catch (err) {
-          log.error({ err }, "Error stopping process");
-        }
-      }
+    try {
+      await exec("docker", ["stop", "-t", "10", containerName], 20_000);
+    } catch (err) {
+      log.error({ err }, "Error stopping container");
     }
 
-    this._neko = null;
-    this._chrome = null;
-    this._openbox = null;
-    this._pulseaudio = null;
-    this._xvfb = null;
-    this._started = false;
+    try {
+      await exec("docker", ["rm", "-f", containerName]);
+    } catch (err) {
+      log.error({ err }, "Error removing container");
+    }
 
+    this._started = false;
     log.info("Virtual display environment stopped");
   }
 }

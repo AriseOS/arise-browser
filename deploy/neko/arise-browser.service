@@ -1,11 +1,12 @@
 [Unit]
-Description=AriseBrowser with Virtual Display
-After=network.target
+Description=AriseBrowser with Docker Neko Virtual Display
+After=network.target docker.service
+Requires=docker.service
 
 [Service]
 Type=simple
-User=neko
 ExecStart=/usr/bin/node /opt/arise-browser/dist/bin/arise-browser.js --virtual-display --port 9867 --host 0.0.0.0
+ExecStopPost=/usr/bin/docker rm -f arise-neko
 Restart=always
 RestartSec=5
 
