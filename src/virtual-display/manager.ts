@@ -172,6 +172,7 @@ export class VirtualDisplayManager {
         command: chromePath,
         args: [
           `--remote-debugging-port=${chromeDebugPort}`,
+          `--user-data-dir=${join(process.env.HOME || "/root", ".arise-browser", "chrome-profile")}`,
           `--display=${display}`,
           "--window-position=0,0",
           "--no-first-run",
