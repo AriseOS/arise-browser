@@ -24,8 +24,8 @@ Most browser automation runs headless — invisible. That's fine until you need 
 AriseBrowser's **virtual display mode** runs a real headed Chrome on any Linux server — no physical monitor needed. Users connect via WebRTC in their browser and see exactly what the AI sees:
 
 ```bash
-# Install dependencies (once)
-sudo bash deploy/neko/setup.sh
+# Install system dependencies (once, Linux only)
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/AriseOS/arise-browser/main/deploy/neko/setup.sh)
 
 # Start with virtual display
 npx arise-browser --virtual-display --host 0.0.0.0

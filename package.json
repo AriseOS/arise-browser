@@ -26,6 +26,9 @@
   "files": [
     "dist",
     "src/browser/scripts/*.js",
+    "deploy/neko",
+    "skill",
+    "plugin",
     "LICENSE"
   ],
   "keywords": [

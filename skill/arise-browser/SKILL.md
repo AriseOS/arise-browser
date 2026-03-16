@@ -92,7 +92,12 @@ Run a real headed Chrome on a headless Linux server. Users watch and interact vi
 
 ```bash
 # 1. Install system dependencies (once, requires root)
-sudo bash deploy/neko/setup.sh
+#    From npm package:
+sudo bash $(dirname $(which arise-browser))/../lib/node_modules/arise-browser/deploy/neko/setup.sh
+#    Or from git clone:
+#    sudo bash deploy/neko/setup.sh
+#    Or directly from GitHub:
+sudo bash <(curl -fsSL https://raw.githubusercontent.com/AriseOS/arise-browser/main/deploy/neko/setup.sh)
 
 # 2. Start with virtual display
 npx arise-browser --virtual-display --port 9867 --host 0.0.0.0 &
@@ -112,13 +117,7 @@ Virtual display mode automatically:
 - Starts Neko server for WebRTC streaming
 - Connects arise-browser to Chrome via CDP
 
-All processes are managed as children of arise-browser — no supervisord needed. Use systemd for production:
-
-```bash
-sudo cp deploy/neko/arise-browser.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now arise-browser
-```
+All processes are managed as children of arise-browser — no supervisord needed.
 
 **Ports in virtual display mode:**
 
