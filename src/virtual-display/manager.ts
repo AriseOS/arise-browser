@@ -114,12 +114,9 @@ export class VirtualDisplayManager {
     );
 
     try {
-      // 1. Xvfb
-      const xorgConf = deployPath("xorg.conf");
+      // 1. Xvfb — does NOT support -config (that's Xorg, not Xvfb)
+      // Xvfb has a built-in dummy driver, no xorg.conf needed
       const xvfbArgs = [display, "-screen", "0", screen, "-nolisten", "tcp"];
-      if (existsSync(xorgConf)) {
-        xvfbArgs.push("-config", xorgConf);
-      }
 
       this._xvfb = new ProcessRunner({
         name: "xvfb",
