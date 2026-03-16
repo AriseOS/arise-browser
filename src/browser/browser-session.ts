@@ -1210,11 +1210,21 @@ export class BrowserSession implements SessionRef {
           "CDP connection established",
         );
 
-        // Register existing pages
+        // Apply stealth overrides + register existing pages
         for (const page of this._context.pages()) {
-          const url = page.url();
-          if (url && url !== "about:blank" && !page.isClosed()) {
-            await this._registerPage(page, { makeCurrent: !this._page });
+          if (!page.isClosed()) {
+            // addInitScript only affects new pages; patch existing ones directly
+            await page.evaluate(() => {
+              Object.defineProperty(Navigator.prototype, 'webdriver', {
+                get: () => false,
+                configurable: false,
+                enumerable: true,
+              });
+            }).catch(() => {});
+            const url = page.url();
+            if (url && url !== "about:blank") {
+              await this._registerPage(page, { makeCurrent: !this._page });
+            }
           }
         }
         break;
