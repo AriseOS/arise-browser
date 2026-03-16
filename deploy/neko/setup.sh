@@ -248,26 +248,19 @@ else
   log "Neko client files already at ${NEKO_WWW}"
 fi
 
-# ─── Neko X11 drivers ────────────────────────────────────────────
-
-XORG_MODULES="/usr/lib/xorg/modules"
-if [[ -d "$XORG_MODULES" ]]; then
-  NEKO_DRIVERS_URL="https://github.com/m1k1o/neko/releases/download/${NEKO_VERSION}/xf86-input-neko-${NEKO_ARCH}.tar.gz"
-
-  if [[ ! -f "${XORG_MODULES}/input/neko_drv.so" ]]; then
-    log "Installing Neko X11 input driver..."
-    wget -q -O /tmp/neko-drivers.tar.gz "$NEKO_DRIVERS_URL" || true
-    if [[ -f /tmp/neko-drivers.tar.gz ]]; then
-      tar -xzf /tmp/neko-drivers.tar.gz -C "$XORG_MODULES" || true
-      rm -f /tmp/neko-drivers.tar.gz
-      log "Neko X11 drivers installed"
-    else
-      warn "Could not download Neko X11 drivers (non-critical)"
-    fi
-  else
-    log "Neko X11 drivers already installed"
-  fi
-fi
+# ─── Neko X11 input driver (optional, build from source) ─────────
+#
+# neko_drv.so provides low-latency mouse input for Neko WebRTC.
+# No prebuilt binary exists — must be compiled from source.
+# Without it, Neko uses xdotool fallback (slightly higher latency).
+#
+# To build manually:
+#   apt install gcc pkgconf autoconf automake libtool make xorg-dev xutils-dev
+#   git clone https://github.com/m1k1o/neko.git /tmp/neko-src
+#   cd /tmp/neko-src/utils/xorg-deps/xf86-input-neko
+#   ./autogen.sh --prefix=/usr && ./configure && make && make install
+#
+warn "Neko X11 input driver (neko_drv.so) not installed — using xdotool fallback. See setup.sh comments to build from source."
 
 # ─── Playwright browser deps ─────────────────────────────────────
 
