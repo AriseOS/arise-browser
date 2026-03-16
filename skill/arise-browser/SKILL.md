@@ -13,40 +13,34 @@ metadata:
 
 # AriseBrowser
 
-Control a real Chrome browser via HTTP API. See what the browser sees, click/type/scroll on elements using persistent refs.
+Control a real Chrome browser via HTTP API. Persistent element refs, YAML accessibility snapshots, WebRTC live view.
 
-## Step 1: Install & Start
+## MANDATORY RULES
 
-### Check prerequisites
+**You MUST follow these rules. No exceptions.**
 
-```bash
-# Docker required (Neko runs Chrome + WebRTC streaming inside a container)
-docker --version || echo "MISSING: Install Docker first — https://get.docker.com"
+1. **Do NOT call any API endpoint until `/health` returns `{"connected":true}`.** The server needs time to start the Docker container and Chrome. Poll `/health` in a loop.
+2. **Every browser task follows: Navigate → Snapshot → Act → Snapshot → Act → Done.** Always snapshot before acting — you need refs from the snapshot to target elements.
+3. **Refs are persistent.** Do NOT re-snapshot just to reuse a ref. Only snapshot when the page changes significantly.
 
-# Node.js required
-node --version || echo "MISSING: Install Node.js 20+ — https://nodejs.org"
-```
+## Step 1: Start the Server
 
-If Docker is missing, install it:
-```bash
-curl -fsSL https://get.docker.com | sh
-```
-
-### Install and start
-
+Requires Docker and Node.js. If arise-browser is not installed:
 ```bash
 npm install -g arise-browser
+```
+
+Start:
+```bash
 npx arise-browser --virtual-display --port 9867 --host 0.0.0.0 &
 ```
 
-Wait for ready:
+**Wait for ready (MANDATORY):**
 ```bash
-until curl -s http://localhost:9867/health > /dev/null 2>&1; do sleep 1; done
-curl http://localhost:9867/health
-# → {"status":"ok","connected":true}
+until curl -s http://localhost:9867/health 2>/dev/null | grep -q '"connected":true'; do sleep 2; done
 ```
 
-First run takes ~2 minutes (Docker pulls the Neko Chrome image ~700MB).
+First run takes ~2 minutes (Docker pulls Neko Chrome image ~700MB).
 
 ### Tell the user
 
