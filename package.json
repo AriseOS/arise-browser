@@ -1,6 +1,6 @@
 {
   "name": "arise-browser",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "AI browser automation engine — persistent refs, multi-strategy actions, behavior recording",
   "type": "module",
   "main": "./dist/src/index.js",
