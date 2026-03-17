@@ -8,7 +8,7 @@ metadata:
   openclaw:
     emoji: "🌐"
     requires:
-      bins: ["npx"]
+      bins: ["npx", "docker"]
 ---
 
 # AriseBrowser
@@ -63,7 +63,7 @@ npm install -g arise-browser
 
 Start:
 ```bash
-npx arise-browser --virtual-display --port 9867 --host 0.0.0.0 &
+npx arise-browser --virtual-display --port 9867 &
 ```
 
 **Wait for ready (MANDATORY):**
@@ -77,13 +77,9 @@ First run takes ~2 minutes (Docker pulls Neko Chrome image ~700MB).
 
 After installation succeeds, inform the user:
 
-1. **Firewall**: Open these ports in your cloud security group:
-   - `9867/tcp` — arise-browser API
-   - `6090/tcp` — Neko WebRTC UI (browser live view)
-   - `52000-52100/udp` — WebRTC media data
-2. **Watch the browser**: Open `http://<server-ip>:6090` in your browser, password: `neko`
-3. **HTTPS (optional)**: For production, put Caddy in front with `tls internal` (self-signed, no domain needed).
-4. **Passwords**: Default Neko passwords are `neko` (viewer) and `admin` (admin). Change via CLI flags.
+1. **Watch the browser**: Open `http://localhost:6090` in your browser, password: `neko`
+2. **Remote access**: Add `--host 0.0.0.0` and `ARISE_BROWSER_TOKEN=<secret>` to the start command, then open ports `9867/tcp`, `6090/tcp`, `52000-52100/udp` in your firewall.
+3. **Passwords**: Change default Neko passwords via `--neko-password` and `--neko-admin-password` flags.
 
 ## Step 2: Core Loop
 
@@ -161,7 +157,7 @@ The Docker container is automatically stopped and cleaned up.
 - Use `?diff=true` after the first snapshot to save tokens.
 - Batch actions: `POST /actions` with `{"actions": [...], "stopOnError": true}`.
 - Tabs: `GET /tabs`, `POST /tab` with `{"action": "create|switch|close"}`.
-- Screenshot (`GET /screenshot`) is useful to show the user what you see, but do NOT use it as your primary data source.
+- Screenshot (`GET /screenshot`) is useful to show the user what you see.
 
 ## Troubleshooting
 
