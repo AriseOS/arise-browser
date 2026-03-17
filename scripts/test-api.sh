@@ -3,11 +3,11 @@
 # AriseBrowser API smoke tests using curl.
 #
 # Usage:
-#   1. Start server: node dist/bin/arise-browser.js --no-headless --port 9867
+#   1. Start server: node dist/bin/arise-browser.js --no-headless --port 16473
 #   2. Run tests:    bash scripts/test-api.sh [base_url]
 #
 
-BASE="${1:-http://localhost:9867}"
+BASE="${1:-http://localhost:16473}"
 PASS=0
 FAIL=0
 

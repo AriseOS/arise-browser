@@ -100,7 +100,7 @@
       "port": {
         "type": "number",
         "description": "Server port",
-        "default": 9867
+        "default": 16473
       },
       "host": {
         "type": "string",

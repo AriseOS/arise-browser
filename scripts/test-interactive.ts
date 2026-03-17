@@ -5,13 +5,13 @@
  * Type commands to control the browser and inspect results.
  *
  * Usage:
- *   1. Start server:  node dist/bin/arise-browser.js --no-headless --port 9867
+ *   1. Start server:  node dist/bin/arise-browser.js --no-headless --port 16473
  *   2. Run:           npx tsx scripts/test-interactive.ts [base_url]
  */
 
 import * as readline from "node:readline";
 
-const BASE = process.argv[2] || "http://localhost:9867";
+const BASE = process.argv[2] || "http://localhost:16473";
 
 // ── Colors ──
 const DIM = "\x1b[2m";

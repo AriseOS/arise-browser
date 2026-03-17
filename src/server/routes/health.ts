@@ -7,7 +7,7 @@ export function registerHealthRoute(app: FastifyInstance) {
     return {
       status: "ok",
       connected: session.isConnected,
-      version: "0.3.1",
+      version: "0.4.0",
     };
   });
 }

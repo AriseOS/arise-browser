@@ -30,7 +30,7 @@ AriseBrowser's **virtual display mode** runs a real headed Chrome on any Linux s
 npx arise-browser --virtual-display --host 0.0.0.0
 
 # AI agent uses the API as usual
-curl -X POST http://server:9867/navigate -d '{"url":"https://example.com"}'
+curl -X POST http://server:16473/navigate -d '{"url":"https://example.com"}'
 
 # Users open http://server:6090 in their browser → live view of Chrome
 ```
@@ -195,9 +195,9 @@ const result = await session.execAction({ type: "click", ref: "e5" });
 // As an HTTP server
 const server = await createServer(
   { mode: "standalone", headless: true },
-  { port: 9867 }
+  { port: 16473 }
 );
-await server.listen({ port: 9867 });
+await server.listen({ port: 16473 });
 ```
 
 ## Comparison
@@ -229,7 +229,7 @@ AriseBrowser ships with an [OpenClaw skill](skill/arise-browser/SKILL.md) and [p
 
 | Variable | Alias | Default |
 |----------|-------|---------|
-| `ARISE_BROWSER_PORT` | `BRIDGE_PORT` | 9867 |
+| `ARISE_BROWSER_PORT` | `BRIDGE_PORT` | 16473 |
 | `ARISE_BROWSER_BIND` | `BRIDGE_BIND` | 127.0.0.1 |
 | `ARISE_BROWSER_TOKEN` | `BRIDGE_TOKEN` | (none) |
 | `ARISE_BROWSER_HEADLESS` | — | true |

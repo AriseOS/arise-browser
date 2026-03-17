@@ -62,7 +62,7 @@ Health, tabs, navigate, snapshot, action, actions, text, screenshot, pdf, evalua
 
 - Accepts `kind` field (mapped to `type`)
 - Accepts `BRIDGE_*` env vars as aliases for `ARISE_BROWSER_*`
-- Same default port (9867)
+- Same default port (16473)
 - JSON snapshot format compatible
 
 ## Dependencies

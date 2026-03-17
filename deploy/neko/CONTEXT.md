@@ -11,7 +11,7 @@ arise-browser (Node.js, host)
   ├── docker run arise-neko
   │     └── supervisord: Xorg, PulseAudio, Openbox, Chrome (CDP :9222), Neko (:8080)
   ├── Playwright connectOverCDP(localhost:9222)
-  └── Fastify HTTP Server (:9867)
+  └── Fastify HTTP Server (:16473)
 ```
 
 ## Files
@@ -31,7 +31,7 @@ arise-browser (Node.js, host)
 | Neko HTTP/WS | 6090 | 8080 | Public (WebRTC UI) |
 | Chrome CDP | 9222 | 9222 | localhost only |
 | WebRTC UDP | 52000-52100 | 52000-52100 | Public |
-| arise-browser | 9867 | — | As needed (API) |
+| arise-browser | 16473 | — | As needed (API) |
 
 ## Persistent Profile
 

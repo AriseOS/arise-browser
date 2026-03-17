@@ -7,11 +7,11 @@
  * tab locks, recording lifecycle, evaluate, text, screenshot, cookies, upload, download, pdf.
  *
  * Usage:
- *   1. Start server:  node dist/bin/arise-browser.js --no-headless --port 9867
+ *   1. Start server:  node dist/bin/arise-browser.js --no-headless --port 16473
  *   2. Run:           npx tsx scripts/test-api.ts [base_url]
  */
 
-const BASE = process.argv[2] || "http://localhost:9867";
+const BASE = process.argv[2] || "http://localhost:16473";
 
 let pass = 0;
 let fail = 0;

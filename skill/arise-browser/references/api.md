@@ -1,6 +1,6 @@
 # AriseBrowser API Reference
 
-Base URL: `http://localhost:9867`
+Base URL: `http://localhost:16473`
 
 ## Health
 
