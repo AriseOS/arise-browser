@@ -7,7 +7,9 @@ Requires=docker.service
 Type=simple
 # Passwords, token and fingerprint settings (ARISE_BROWSER_*), mode 0600
 EnvironmentFile=-/etc/arise-browser/env
-ExecStart=/usr/bin/node /opt/arise-browser/dist/bin/arise-browser.js --virtual-display --port 16473 --host 0.0.0.0
+# The API binds to 127.0.0.1 by default. Only expose it (ARISE_BROWSER_BIND=0.0.0.0)
+# together with ARISE_BROWSER_TOKEN: without a token every endpoint is unauthenticated.
+ExecStart=/usr/bin/node /opt/arise-browser/dist/bin/arise-browser.js --virtual-display --port 16473
 # Without an explicit container name, remove both defaults (plain and fingerprint mode)
 ExecStopPost=/bin/sh -c 'if [ -n "$${ARISE_BROWSER_CONTAINER_NAME}" ]; then /usr/bin/docker rm -f "$${ARISE_BROWSER_CONTAINER_NAME}"; else /usr/bin/docker rm -f arise-neko arise-neko-fp; fi >/dev/null 2>&1; exit 0'
 Restart=always

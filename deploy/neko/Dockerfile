@@ -1,4 +1,4 @@
-FROM ghcr.io/m1k1o/neko/google-chrome:latest
+FROM ghcr.io/m1k1o/neko/google-chrome:3.2.0
 
 # socat to forward CDP from 127.0.0.1:9222 to 0.0.0.0:9223
 # (Chrome ignores --remote-debugging-address in newer versions)

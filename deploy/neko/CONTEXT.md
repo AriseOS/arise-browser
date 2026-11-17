@@ -18,7 +18,7 @@ arise-browser (Node.js, host)
 
 | File | Purpose |
 |------|---------|
-| `Dockerfile` | Custom image based on `ghcr.io/m1k1o/neko/google-chrome:latest`, adds CDP support |
+| `Dockerfile` | Custom image based on `ghcr.io/m1k1o/neko/google-chrome:3.2.0` (pinned; `latest` swapped the whole web client in 3.2.0), adds CDP support |
 | `supervisord.conf` | Chrome launch config with `--remote-debugging-port=9222` |
 | `policies.json` | Chrome managed policies (allow CDP, popups, disable autofill) |
 | `arise-browser.service` | systemd unit (requires docker.service) |
