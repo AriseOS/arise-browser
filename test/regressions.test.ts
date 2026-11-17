@@ -66,11 +66,17 @@ test("arise-browser regressions", async (t) => {
   });
 
   await t.test("navigator.webdriver is false in Playwright-launched Chromium", async () => {
-    await postJson("/navigate", { url: "data:text/html,<p>webdriver</p>" });
+    // Own tab: the previous test leaves the current tab on a failed navigation
+    const nav = await postJson("/navigate", {
+      url: "data:text/html,<p>webdriver</p>",
+      newTab: true,
+    });
+    assert.equal(nav.response.status, 200, JSON.stringify(nav.data));
     const { response, data } = await postJson("/evaluate", {
       expression: "navigator.webdriver",
+      tabId: nav.data.tabId,
     });
-    assert.equal(response.status, 200);
+    assert.equal(response.status, 200, JSON.stringify(data));
     assert.equal(data.result, false);
   });
 
