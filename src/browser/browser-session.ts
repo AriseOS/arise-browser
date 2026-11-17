@@ -1215,11 +1215,15 @@ export class BrowserSession implements SessionRef {
           if (!page.isClosed()) {
             // addInitScript only affects new pages; patch existing ones directly
             await page.evaluate(() => {
-              Object.defineProperty(Navigator.prototype, 'webdriver', {
-                get: () => false,
-                configurable: false,
-                enumerable: true,
-              });
+              // Only patch when the browser reports automation; a JS getter
+              // replacing the native one is itself detectable.
+              if (navigator.webdriver) {
+                Object.defineProperty(Navigator.prototype, 'webdriver', {
+                  get: () => false,
+                  configurable: false,
+                  enumerable: true,
+                });
+              }
             }).catch(() => {});
             const url = page.url();
             if (url && url !== "about:blank") {
@@ -1362,13 +1366,19 @@ export class BrowserSession implements SessionRef {
 
     this._context.addInitScript(() => {
       // --- navigator.webdriver ---
-      // Playwright sets navigator.webdriver = true. We override it to false
-      // and make it non-configurable so CDP cannot re-define it.
-      Object.defineProperty(Navigator.prototype, 'webdriver', {
-        get: () => false,
-        configurable: false,
-        enumerable: true,
-      });
+      // Playwright-launched Chromium reports navigator.webdriver = true; override
+      // it to false and make it non-configurable so CDP cannot re-define it.
+      // Leave it alone when the browser already reports false (e.g. a browser we
+      // attach to over CDP, or fingerprint-chromium): replacing the native getter
+      // with a JS function is detectable ("API nativeness" checks compare the
+      // descriptor and Function.prototype.toString against native code).
+      if (navigator.webdriver) {
+        Object.defineProperty(Navigator.prototype, 'webdriver', {
+          get: () => false,
+          configurable: false,
+          enumerable: true,
+        });
+      }
     });
 
     this._context.on("page", (page) => {
