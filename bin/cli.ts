@@ -166,8 +166,11 @@ async function cmdStop(): Promise<void> {
 
   // Try to stop Docker container
   try {
-    const containerName = process.env.ARISE_BROWSER_CONTAINER_NAME || "arise-neko";
-    const docker = spawn("docker", ["rm", "-f", containerName], {
+    // Without an explicit name, remove both defaults (plain and fingerprint mode)
+    const containerNames = process.env.ARISE_BROWSER_CONTAINER_NAME
+      ? [process.env.ARISE_BROWSER_CONTAINER_NAME]
+      : ["arise-neko", "arise-neko-fp"];
+    const docker = spawn("docker", ["rm", "-f", ...containerNames], {
       stdio: ["ignore", "ignore", "ignore"],
     });
     await new Promise<void>((resolve) => docker.on("close", () => resolve()));
@@ -339,6 +342,9 @@ Commands:
 
 Options for 'start':
   --virtual-display         Enable Docker virtual display
+  --fingerprint-seed <n>    Use fingerprint-chromium with this seed (needs --virtual-display)
+  --fingerprint-timezone <tz>  Timezone of the fingerprint browser (default: UTC)
+  --fingerprint-lang <lang> Language of the fingerprint browser (default: en-US)
   --port, -p <port>         Server port (default: ${DEFAULT_PORT})
   --host <host>             Bind address (default: 127.0.0.1)
   --headless / --no-headless

@@ -24,6 +24,8 @@ AI browser automation engine extracted from arise-desktop's browser control laye
 
 `--virtual-display` starts a Docker container (`arise-neko`) running Xvfb + PulseAudio + Openbox + Chrome + Neko, then connects via CDP. Users watch/control the browser through Neko's WebRTC UI (port 6090). See `deploy/neko/CONTEXT.md` for details.
 
+With `--fingerprint-seed <n>` the container is `arise-neko-fp` instead, running fingerprint-chromium with that seed. See `deploy/neko-fp/CONTEXT.md`.
+
 ## Key Differentiators (vs Pinchtab)
 
 - **3-layer persistent refs**: WeakMap → aria-ref → signature (unified_analyzer.js)

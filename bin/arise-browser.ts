@@ -34,7 +34,7 @@ if (firstArg && KNOWN_COMMANDS.includes(firstArg)) {
 
 async function startServer() {
   const { createServer } = await import("../src/server/server.js");
-  const { VirtualDisplayManager } = await import("../src/virtual-display/manager.js");
+  const { VirtualDisplayManager, parseFingerprintSeed, FINGERPRINT_NAME } = await import("../src/virtual-display/manager.js");
   const { readFileSync } = await import("node:fs");
 
   function getPackageVersion(): string {
@@ -104,8 +104,14 @@ Virtual display:
   --neko-port <port>        Virtual display HTTP/WS port (default: 6090)
   --neko-password <pwd>     User password (default: "neko")
   --neko-admin-password <pwd> Admin password (default: "admin")
-  --container-name <name>   Docker container name (default: "arise-neko")
-  --image-name <name>       Docker image name (default: "arise-neko")
+  --container-name <name>   Docker container name (default: "arise-neko", fingerprint mode: "arise-neko-fp")
+  --image-name <name>       Docker image name (default: "arise-neko", fingerprint mode: "arise-neko-fp")
+
+Fingerprint browser (virtual display only):
+  --fingerprint-seed <n>    Run fingerprint-chromium with this seed (1-2147483647).
+                            Same seed = same fingerprint; another seed = another device
+  --fingerprint-timezone <tz>  IANA timezone, should match the egress IP (default: "UTC")
+  --fingerprint-lang <lang> Primary language (default: "en-US")
 
 Environment variables:
   ARISE_BROWSER_PORT / BRIDGE_PORT     Default: 16473
@@ -119,6 +125,9 @@ Environment variables:
   ARISE_BROWSER_NEKO_ADMIN_PASSWORD    Admin password
   ARISE_BROWSER_CONTAINER_NAME         Container name (default: "arise-neko")
   ARISE_BROWSER_IMAGE_NAME             Image name (default: "arise-neko")
+  ARISE_BROWSER_FINGERPRINT_SEED       Fingerprint seed (enables fingerprint-chromium)
+  ARISE_BROWSER_FINGERPRINT_TIMEZONE   Fingerprint timezone (default: "UTC")
+  ARISE_BROWSER_FINGERPRINT_LANG       Fingerprint language (default: "en-US")
 `);
     process.exit(0);
   }
@@ -180,15 +189,44 @@ Environment variables:
       || process.env.ARISE_BROWSER_NEKO_ADMIN_PASSWORD
       || "admin";
 
+  let fingerprintSeed: number | undefined;
+  try {
+    fingerprintSeed = parseFingerprintSeed(
+      getArg(["--fingerprint-seed"]) || process.env.ARISE_BROWSER_FINGERPRINT_SEED,
+    );
+  } catch (err) {
+    console.error(`Error: ${(err as Error).message}`);
+    process.exit(1);
+  }
+  const fingerprintTimezone =
+    getArg(["--fingerprint-timezone"])
+      || process.env.ARISE_BROWSER_FINGERPRINT_TIMEZONE
+      || undefined;
+  const fingerprintLang =
+    getArg(["--fingerprint-lang"])
+      || process.env.ARISE_BROWSER_FINGERPRINT_LANG
+      || undefined;
+
+  if (fingerprintSeed !== undefined && !virtualDisplayEnabled) {
+    console.error("Error: --fingerprint-seed requires --virtual-display");
+    process.exit(1);
+  }
+  if (fingerprintSeed === undefined && (fingerprintTimezone || fingerprintLang)) {
+    console.error("Error: --fingerprint-timezone/--fingerprint-lang require --fingerprint-seed");
+    process.exit(1);
+  }
+
+  const defaultDockerName = fingerprintSeed === undefined ? "arise-neko" : FINGERPRINT_NAME;
+
   const containerName =
     getArg(["--container-name"])
       || process.env.ARISE_BROWSER_CONTAINER_NAME
-      || "arise-neko";
+      || defaultDockerName;
 
   const imageName =
     getArg(["--image-name"])
       || process.env.ARISE_BROWSER_IMAGE_NAME
-      || "arise-neko";
+      || defaultDockerName;
 
   // Determine mode
   type BrowserMode = "standalone" | "cdp" | "managed";
@@ -230,12 +268,18 @@ Environment variables:
 
     if (virtualDisplayEnabled) {
       console.log(`Virtual display: enabled (port :${nekoPort})`);
+      if (fingerprintSeed !== undefined) {
+        console.log(`Fingerprint browser: enabled (timezone ${fingerprintTimezone ?? "UTC"}, lang ${fingerprintLang ?? "en-US"})`);
+      }
       displayManager = new VirtualDisplayManager({
         nekoPort,
         nekoPassword,
         nekoAdminPassword,
         containerName,
         imageName,
+        fingerprintSeed,
+        fingerprintTimezone,
+        fingerprintLang,
       });
       await displayManager.start();
     }

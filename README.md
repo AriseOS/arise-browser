@@ -39,6 +39,21 @@ Behind the scenes, arise-browser manages a Docker container (`arise-neko`) runni
 
 **Why not just use headless?** Anti-bot systems increasingly fingerprint headless environments. A headed Chrome running on a real X11 display is indistinguishable from a human using a desktop — because it *is* a real desktop environment.
 
+### Fingerprint browser (one seed = one device)
+
+Every machine running the stock image shows the **same** browser fingerprint: Chrome renders canvas in software, so the canvas hash, fonts and screen are identical across servers. Add a fingerprint seed and the container runs [fingerprint-chromium](https://github.com/adryfish/fingerprint-chromium) instead of Google Chrome:
+
+```bash
+npx arise-browser --virtual-display \
+  --fingerprint-seed 123456789 \
+  --fingerprint-timezone America/Los_Angeles   # match the server's egress IP
+```
+
+- The same seed always yields the same fingerprint (canvas, audio, ClientRects, WebGL image, `deviceMemory`); a different seed is a different device. Keep the seed **and** the profile volume (`arise-neko-fp-profile`) to keep an identity across servers.
+- Anything a site can cross-check stays real: platform is `linux` (matches fonts and the TCP/IP stack), the core count is the container's real `nproc`, the UA version matches the engine.
+- Known gaps: WebGL reports the SwiftShader software renderer (fingerprint-chromium only fakes the GPU for a Windows platform), `deviceMemory` comes from the seed, and the IP is still a datacenter IP.
+- Uses its own image and container (`arise-neko-fp`), built from `deploy/neko-fp/` on first start.
+
 ## 2. Use Fewer Tokens
 
 Every token your agent spends reading a page is money. AriseBrowser gives your agent a **compact accessibility snapshot** instead of raw HTML:
@@ -238,6 +253,11 @@ AriseBrowser ships with an [OpenClaw skill](skill/arise-browser/SKILL.md) and [p
 | `ARISE_BROWSER_NEKO_PORT` | — | 6090 |
 | `ARISE_BROWSER_NEKO_PASSWORD` | — | neko |
 | `ARISE_BROWSER_NEKO_ADMIN_PASSWORD` | — | admin |
+| `ARISE_BROWSER_CONTAINER_NAME` | — | arise-neko (fingerprint: arise-neko-fp) |
+| `ARISE_BROWSER_IMAGE_NAME` | — | arise-neko (fingerprint: arise-neko-fp) |
+| `ARISE_BROWSER_FINGERPRINT_SEED` | — | (none — fingerprint browser off) |
+| `ARISE_BROWSER_FINGERPRINT_TIMEZONE` | — | UTC |
+| `ARISE_BROWSER_FINGERPRINT_LANG` | — | en-US |
 
 `BRIDGE_*` aliases for Pinchtab drop-in compatibility.
 
