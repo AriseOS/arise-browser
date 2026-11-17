@@ -30,6 +30,17 @@ PROFILE_DIR=/home/neko/.config/arise-chrome
 
 rm -f "$PROFILE_DIR/SingletonLock" "$PROFILE_DIR/SingletonSocket" "$PROFILE_DIR/SingletonCookie"
 
+# Wait for the window manager (openbox in the browser image, xfwm4 on the XFCE
+# desktop); a window created before it is up ignores --start-maximized, and the
+# window size is visible to sites (outerWidth/innerWidth vs screen).
+# Do not pass --window-position: with it, neither window manager maximizes the
+# window (measured 945px wide on a 1920px screen).
+for _ in $(seq 1 40); do
+  if pgrep -x xfwm4 >/dev/null || pgrep -x openbox >/dev/null; then break; fi
+  sleep 0.5
+done
+sleep 1
+
 exec /opt/fp-chromium/chrome \
   --fingerprint="$ARISE_FP_SEED" \
   --fingerprint-platform=linux \
@@ -43,7 +54,6 @@ exec /opt/fp-chromium/chrome \
   --disable-quic \
   --force-webrtc-ip-handling-policy=disable_non_proxied_udp \
   --enable-unsafe-swiftshader \
-  --window-position=0,0 \
   --display="$DISPLAY" \
   --user-data-dir="$PROFILE_DIR" \
   --no-first-run \
